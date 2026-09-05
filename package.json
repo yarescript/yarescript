@@ -1,0 +1,43 @@
+{
+  "name": "yarescript",
+  "version": "0.1.0",
+  "description": "A compiled language for the web that fixes JavaScript by compiling straight to WebAssembly. No JS-in-a-trenchcoat. Just a tiny loader and fast, real WASM.",
+  "private": true,
+  "type": "commonjs",
+  "bin": {
+    "yare": "dist/cli/index.js"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "cli": "node dist/cli/index.js",
+    "dev": "ts-node src/cli/index.ts",
+    "test": "node --test dist/test/**/*.test.js"
+  },
+  "keywords": [
+    "yarescript",
+    "wasm",
+    "webassembly",
+    "compiler",
+    "language"
+  ],
+  "author": "",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yarescript/yarescript.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yarescript/yarescript/issues"
+  },
+  "homepage": "https://github.com/yarescript/yarescript#readme",
+  "dependencies": {
+    "binaryen": "100.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "ts-node": "^10.9.2"
+  }
+}
