@@ -11,8 +11,8 @@ import { ParseError } from "../parser/parser";
 /**
  * Runs a yarescript source string through the full pipeline and executes
  * the resulting WebAssembly module, capturing whatever it logs via
- * console.log so we can assert on real program output -- not just "it
- * compiled".
+ * console.log so the tests can assert on real program output, not just
+ * on the fact that it compiled.
  */
 async function compileAndRun(source: string): Promise<{ logs: string[]; exports: WebAssembly.Exports }> {
   const program = parse(source, "<test>");

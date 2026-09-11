@@ -67,7 +67,7 @@ class FunctionScope {
 
   child(): FunctionScope {
     // yarescript blocks share the flat local index space (like most
-    // stack machines / wasm functions do); we just fork variable *names*.
+    // stack machines / wasm functions do); only variable *names* get forked.
     const s = Object.create(FunctionScope.prototype) as FunctionScope;
     s.locals = new Map(this.locals);
     s.localTypes = this.localTypes;
