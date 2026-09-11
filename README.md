@@ -15,7 +15,7 @@ functions such as `console.log`. Your actual program, every `if`, every loop,
 every function, is real WebAssembly bytecode running at near-native speed.
 
 ```
-public function: void main() {
+public function: void main() {  // I didnt use, int becuase I am lazy
     console.log("hello, world");
 }
 ```
@@ -65,21 +65,25 @@ Early, but real. The `.ys` to WebAssembly pipeline works end to end today.
 Working right now:
 
 - Lexer, recursive-descent parser, and AST
-- Static type checker (`int`, `long`, `float`, `double`, `bool`, `string`,
-  `void`)
+- Static type checker (`int`, `long`, `float`, `double`, `bool`, `char`,
+  `string`, `void`)
 - Binaryen-backed codegen emitting real, runnable `.wasm`
 - Functions, `let`/`const`, `if`/`else`, `while`, `for`, `break`, `continue`,
   recursion, operator precedence
-- `console.log` as a host import, overloaded per type, which proves yarescript
-  can talk to the outside world without becoming JavaScript
-- `yare init` / `yare build` / `yare run` CLI
+- Strings you can concatenate and compare, on a small allocator that grows the
+  module when it runs out of room
+- Explicit casts with `->`, so narrowing a number is something you choose
+- Cross-file modules: `import { helper } from "./helper.ys"`
+- `console.log` and `assert` as host imports, which proves yarescript can talk
+  to the outside world without becoming JavaScript
+- `yare init` / `yare build` / `yare run` / `yare fmt` / `yare test` CLI
 - `config.yare` project manifest
 - A small generated loader for both Node and the browser
 
 Still to come:
 
-- String operators (`+`, `==`), arrays and objects, a real module/import system,
-  and a package registry for "libs". See [ROADMAP.md](./ROADMAP.md).
+- Arrays, structs, generics, a garbage collector, source maps, an editor
+  extension, and a package registry for "libs". See [ROADMAP.md](./ROADMAP.md).
 - yarescript is not published to npm yet, so this is pre-release. When it ships,
   you will be able to install it with `npm install -g yarescript`.
 
@@ -94,9 +98,18 @@ node ../../dist/cli/index.js build   # or, once installed: yare build
 node ../../dist/cli/index.js run     # or: yare run
 ```
 
+Then try the other commands from inside a project:
+
+```bash
+node ../../dist/cli/index.js test          # runs every *.test.ys file
+node ../../dist/cli/index.js fmt --check   # reports what needs reformatting
+```
+
 See [`examples/kitchen-sink`](./examples/kitchen-sink) for a bigger tour:
 recursion (`fib`), loops, `break`/`continue`, every primitive type, and a
 browser demo (`index.html`) that loads the compiled `.wasm` directly.
+[`examples/modules`](./examples/modules) shows a two-file project with imports
+and a test file.
 
 ## How a project is laid out
 
@@ -147,14 +160,17 @@ public function: void main() {
   `visibility` is `public` (exported from the compiled module) or `private`
   (internal only), and it defaults to `public`.
 - Every function and variable has an explicit type, from the low-level numerics
-  (`int`, `long`, `float`, `double`) up through `bool` and `string`. There is no
-  `any` and no implicit `undefined`.
+  (`int`, `long`, `float`, `double`, `char`) up through `bool` and `string`.
+  There is no `any` and no implicit `undefined`.
+- Numbers widen on their own and narrow only when you ask: `let: int n = pi -> int;`
+- Strings concatenate with `+` and compare with `==`.
+- Other files come in with `import { helper } from "./helper.ys";`
 - `main()` is required, and it is what `yare run` calls.
 
 ## Architecture
 
 ```
- .ys source
+ .ys source (and every file it imports, resolved by src/modules)
      |
      v
   lexer          src/lexer      hand-written tokenizer
@@ -175,6 +191,8 @@ public function: void main() {
      |
      v
   CLI            src/cli        yare init|build|run, config.yare
+                                plus yare fmt (src/fmt) and
+                                yare test (src/test-runner)
 ```
 
 The compiler itself is written from scratch in TypeScript for now. Your
