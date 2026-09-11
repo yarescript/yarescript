@@ -10,13 +10,16 @@ import { TypeError_ } from "../checker/checker";
 const VERSION = "0.1.0";
 
 function usage() {
-  console.log(`yarescript ${VERSION} - a compiled language for the web, fixed for the web.
+  console.log(`yarescript ${VERSION} - a compiled language for the web. Compiles .ys source to WebAssembly.
 
 Usage:
   yare init [name]        Scaffold a new yarescript project (writes ${DEFAULT_CONFIG_FILENAME})
   yare build [--wat]      Compile the project entry to WebAssembly + a tiny JS loader
   yare run [--wat]        Build, then execute the compiled program in Node
   yare version            Print the compiler version
+
+yarescript is written by Arunkumar (github.com/Seigh-sword) and maintained
+by Surya (github.com/suripewepedie).
 `);
 }
 

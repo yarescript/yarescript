@@ -2,8 +2,8 @@
 
 This document specifies the syntax and semantics currently implemented by
 the compiler in this repo (`src/lexer`, `src/parser`, `src/checker`,
-`src/codegen`). Anything marked **(planned)** is not implemented yet — see
-[ROADMAP.md](./../ROADMAP.md).
+`src/codegen`). Anything marked **(planned)** is not implemented yet. See
+[ROADMAP.md](../ROADMAP.md).
 
 ## File extension
 
@@ -21,8 +21,8 @@ Source files use `.ys`. A project's entry point is declared in
 ## Types
 
 yarescript is statically typed. Every variable, parameter, and function
-return value has an explicit primitive type — there is no inference on
-declarations and no `any`.
+return value has an explicit primitive type. There is no inference on
+declarations, and there is no `any`.
 
 | Type     | WebAssembly representation                     | Notes |
 |----------|-------------------------------------------------|-------|
@@ -36,7 +36,7 @@ declarations and no `any`.
 
 Numeric types widen implicitly in one direction only:
 `int -> long -> float -> double`. Narrowing requires an explicit cast
-**(planned)** — right now, narrowing assignments are a type error.
+**(planned)**. Right now, narrowing assignments are a type error.
 
 ## Declarations
 
@@ -70,7 +70,7 @@ visibility? function: RETURN_TYPE name(PARAM_TYPE paramName, ...) {
   implicitly-widenable one) on **every** control-flow path; the checker
   verifies this statically and refuses to compile otherwise.
 - Every program needs exactly one `public function: void main()` (or any
-  return type, though `void` is idiomatic) — this is the entry point
+  return type, though `void` is idiomatic). This is the entry point
   `yare run` invokes.
 
 ```
@@ -87,13 +87,13 @@ private function: int square(int x) {
 
 - `if (cond) { ... } else if (cond) { ... } else { ... }`
 - `while (cond) { ... }`
-- `for (init; cond; update) { ... }` — `init` may be a `let`/`const`
+- `for (init; cond; update) { ... }`, where `init` may be a `let`/`const`
   declaration or an expression statement
 - `return expr;` / `return;`
 - `break;` / `continue;` (only valid inside a loop)
 - expression statements, e.g. a bare function call: `doSomething();`
 
-`if`/`while`/`for` conditions must be `bool` — there is no truthiness
+`if`/`while`/`for` conditions must be `bool`. There is no truthiness
 coercion from `int` or `string`.
 
 ## Expressions & operators
@@ -110,7 +110,7 @@ Assignment: `= += -= *= /=`, and unary `++`/`--` (prefix and postfix),
 all on plain variables today.
 
 String concatenation with `+` on two `string` operands is **planned**
-(not implemented in codegen yet — see ROADMAP).
+(not implemented in codegen yet, see ROADMAP).
 
 Function calls: `name(args...)`. Calls are resolved either to a
 user-defined yarescript function or to a **host function** (see below).
@@ -123,7 +123,7 @@ host import (`console_log_string`, `console_log_int`, `console_log_long`,
 `console_log_float`, `console_log_double`, `console_log_bool`) and the
 generated loader supplies the actual implementation. This is
 intentional: the compiled `.wasm` never talks to the host through
-ad hoc JS glue code your program authored — it goes through a small,
+ad hoc JS glue code your program authored. It goes through a small,
 fixed set of well-known imports the loader always provides.
 
 ## Modules & imports **(planned)**

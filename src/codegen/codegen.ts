@@ -7,7 +7,7 @@ import { YType } from "../checker/types";
  * Lowers a type-checked yarescript AST straight to a WebAssembly module
  * using binaryen. This is the whole point of the language: no JS emitted
  * here, ever. The only JS yarescript produces is the tiny host-side loader
- * (see src/runtime/loader.ts) that instantiates this module and hands it
+ * (see src/runtime/loader-template.ts) that instantiates this module and hands it
  * a handful of host functions (console.log, etc).
  */
 

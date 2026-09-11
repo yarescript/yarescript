@@ -1,7 +1,7 @@
 {
   "name": "yarescript",
   "version": "0.1.0",
-  "description": "A compiled language for the web that fixes JavaScript by compiling straight to WebAssembly. No JS-in-a-trenchcoat. Just a tiny loader and fast, real WASM.",
+  "description": "A compiled language for the web. yarescript compiles .ys source straight to WebAssembly, with a tiny fixed-size loader as the only JavaScript.",
   "private": true,
   "type": "commonjs",
   "bin": {
@@ -22,7 +22,17 @@
     "compiler",
     "language"
   ],
-  "author": "",
+  "author": "Arunkumar (https://github.com/Seigh-sword)",
+  "contributors": [
+    {
+      "name": "Arunkumar",
+      "url": "https://github.com/Seigh-sword"
+    },
+    {
+      "name": "Surya",
+      "url": "https://github.com/suripewepedie"
+    }
+  ],
   "license": "ISC",
   "repository": {
     "type": "git",

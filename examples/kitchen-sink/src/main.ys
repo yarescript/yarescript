@@ -1,5 +1,6 @@
-// A slightly bigger tour of yarescript: functions, let/const, control
-// flow, and every primitive type -- compiled straight to WebAssembly.
+// A bigger tour of yarescript: functions, let/const, control flow, and
+// every primitive type, all compiled straight to WebAssembly.
+// Build it with `yare build`, run it with `yare run`.
 
 public function: int fib(int n) {
     if (n < 2) {
