@@ -1,0 +1,387 @@
+import * as N from "../ast/nodes";
+import { isAssignable, isNumeric, isValidType, widen, YType } from "./types";
+
+export class TypeError_ extends Error {
+  constructor(message: string, public line: number) {
+    super(`Type error: ${message} (line ${line})`);
+  }
+}
+
+interface FunctionSig {
+  name: string;
+  params: YType[];
+  returnType: YType;
+  visibility: N.Visibility;
+}
+
+interface HostFunctionSig {
+  /** the name as called from yarescript, e.g. "console.log" */
+  qualifiedName: string;
+  /** accepted argument type -> the concrete host import name to emit */
+  overloads: Partial<Record<YType, string>>;
+  returnType: YType;
+}
+
+// The standard library available to every yarescript program without an
+// explicit `import`. Keeps the "batteries included but the loader stays
+// tiny" promise: these compile straight to WASM host imports, not JS glue.
+export const HOST_FUNCTIONS: Record<string, HostFunctionSig> = {
+  "console.log": {
+    qualifiedName: "console.log",
+    overloads: {
+      string: "console_log_string",
+      int: "console_log_int",
+      long: "console_log_long",
+      float: "console_log_float",
+      double: "console_log_double",
+      bool: "console_log_bool",
+    },
+    returnType: "void",
+  },
+};
+
+class Scope {
+  private vars = new Map<string, { type: YType; isConst: boolean }>();
+  constructor(public parent: Scope | null = null) {}
+
+  declare(name: string, type: YType, isConst: boolean, line: number) {
+    if (this.vars.has(name)) {
+      throw new TypeError_(`Variable '${name}' is already declared in this scope`, line);
+    }
+    this.vars.set(name, { type, isConst });
+  }
+
+  lookup(name: string): { type: YType; isConst: boolean } | undefined {
+    return this.vars.get(name) ?? this.parent?.lookup(name);
+  }
+
+  child(): Scope {
+    return new Scope(this);
+  }
+}
+
+export interface CheckedProgram {
+  program: N.Program;
+  functions: Map<string, FunctionSig>;
+}
+
+/**
+ * Walks the AST, resolves every variable/function type, verifies
+ * assignments & calls are legal, and annotates nodes with `inferredType`
+ * so codegen never has to re-derive types.
+ */
+export class Checker {
+  private functions = new Map<string, FunctionSig>();
+
+  check(program: N.Program): CheckedProgram {
+    // First pass: collect function signatures so calls can be forward-referenced.
+    for (const decl of program.body) {
+      if (decl.kind === "FunctionDecl") {
+        if (!isValidType(decl.returnType.name)) {
+          throw new TypeError_(`Unknown return type '${decl.returnType.name}'`, decl.line);
+        }
+        const params: YType[] = decl.params.map((p) => {
+          if (!isValidType(p.paramType.name)) {
+            throw new TypeError_(`Unknown parameter type '${p.paramType.name}'`, decl.line);
+          }
+          return p.paramType.name as YType;
+        });
+        if (this.functions.has(decl.name)) {
+          throw new TypeError_(`Function '${decl.name}' is already defined`, decl.line);
+        }
+        this.functions.set(decl.name, {
+          name: decl.name,
+          params,
+          returnType: decl.returnType.name as YType,
+          visibility: decl.visibility,
+        });
+      }
+    }
+
+    if (!this.functions.has("main")) {
+      throw new TypeError_("Program has no 'main' function. Every yarescript program needs one.", 0);
+    }
+
+    const globalScope = new Scope();
+
+    for (const decl of program.body) {
+      if (decl.kind === "FunctionDecl") {
+        this.checkFunction(decl, globalScope);
+      } else if (decl.kind === "VarDecl") {
+        this.checkVarDecl(decl, globalScope);
+      }
+      // ImportDecl: nothing to check yet (module resolution is a v2 feature).
+    }
+
+    return { program, functions: this.functions };
+  }
+
+  private checkFunction(fn: N.FunctionDecl, outer: Scope) {
+    const scope = outer.child();
+    for (const p of fn.params) {
+      scope.declare(p.name, p.paramType.name as YType, false, fn.line);
+    }
+    const returnType = fn.returnType.name as YType;
+    const sawReturn = this.checkBlock(fn.body, scope, returnType);
+    if (returnType !== "void" && !sawReturn) {
+      throw new TypeError_(
+        `Function '${fn.name}' must return a value of type '${returnType}' on every path`,
+        fn.line
+      );
+    }
+  }
+
+  private checkVarDecl(decl: N.VarDecl, scope: Scope) {
+    if (!isValidType(decl.varType.name)) {
+      throw new TypeError_(`Unknown type '${decl.varType.name}'`, decl.line);
+    }
+    const declType = decl.varType.name as YType;
+    if (decl.init) {
+      const initType = this.checkExpr(decl.init, scope);
+      if (!isAssignable(initType, declType)) {
+        throw new TypeError_(
+          `Cannot assign '${initType}' to '${declType}' variable '${decl.name}'`,
+          decl.line
+        );
+      }
+    } else if (decl.isConst) {
+      throw new TypeError_(`const '${decl.name}' must be initialized`, decl.line);
+    }
+    scope.declare(decl.name, declType, decl.isConst, decl.line);
+  }
+
+  /** Returns true if every path through the block returns a value. */
+  private checkBlock(block: N.Block, outer: Scope, expectedReturn: YType): boolean {
+    const scope = outer.child();
+    let returns = false;
+    for (const stmt of block.body) {
+      if (this.checkStmt(stmt, scope, expectedReturn)) returns = true;
+    }
+    return returns;
+  }
+
+  private checkStmt(stmt: N.Stmt, scope: Scope, expectedReturn: YType): boolean {
+    switch (stmt.kind) {
+      case "VarDecl":
+        this.checkVarDecl(stmt, scope);
+        return false;
+      case "Block":
+        return this.checkBlock(stmt, scope, expectedReturn);
+      case "ExprStmt":
+        this.checkExpr(stmt.expression, scope);
+        return false;
+      case "ReturnStmt": {
+        if (stmt.argument) {
+          const t = this.checkExpr(stmt.argument, scope);
+          if (!isAssignable(t, expectedReturn)) {
+            throw new TypeError_(
+              `Cannot return '${t}' from a function declared to return '${expectedReturn}'`,
+              stmt.line
+            );
+          }
+        } else if (expectedReturn !== "void") {
+          throw new TypeError_(`Missing return value of type '${expectedReturn}'`, stmt.line);
+        }
+        return true;
+      }
+      case "IfStmt": {
+        const t = this.checkExpr(stmt.test, scope);
+        if (t !== "bool") throw new TypeError_(`'if' condition must be bool, got '${t}'`, stmt.line);
+        const consReturns = this.checkBlock(stmt.consequent, scope, expectedReturn);
+        let altReturns = false;
+        if (stmt.alternate) {
+          altReturns =
+            stmt.alternate.kind === "IfStmt"
+              ? this.checkStmt(stmt.alternate, scope, expectedReturn)
+              : this.checkBlock(stmt.alternate, scope, expectedReturn);
+        }
+        return consReturns && altReturns;
+      }
+      case "WhileStmt": {
+        const t = this.checkExpr(stmt.test, scope);
+        if (t !== "bool") throw new TypeError_(`'while' condition must be bool, got '${t}'`, stmt.line);
+        this.checkBlock(stmt.body, scope, expectedReturn);
+        return false;
+      }
+      case "ForStmt": {
+        const forScope = scope.child();
+        if (stmt.init) {
+          if (stmt.init.kind === "VarDecl") this.checkVarDecl(stmt.init, forScope);
+          else this.checkExpr(stmt.init.expression, forScope);
+        }
+        if (stmt.test) {
+          const t = this.checkExpr(stmt.test, forScope);
+          if (t !== "bool") throw new TypeError_(`'for' condition must be bool, got '${t}'`, stmt.line);
+        }
+        if (stmt.update) this.checkExpr(stmt.update, forScope);
+        this.checkBlock(stmt.body, forScope, expectedReturn);
+        return false;
+      }
+      case "BreakStmt":
+      case "ContinueStmt":
+        return false;
+    }
+  }
+
+  private checkExpr(expr: N.Expr, scope: Scope): YType {
+    switch (expr.kind) {
+      case "IntLiteral":
+        expr.inferredType = "int";
+        return "int";
+      case "FloatLiteral":
+        expr.inferredType = "double";
+        return "double";
+      case "StringLiteral":
+        expr.inferredType = "string";
+        return "string";
+      case "BoolLiteral":
+        expr.inferredType = "bool";
+        return "bool";
+      case "Identifier": {
+        const v = scope.lookup(expr.name);
+        if (!v) throw new TypeError_(`Unknown identifier '${expr.name}'`, expr.line);
+        expr.inferredType = v.type;
+        return v.type;
+      }
+      case "MemberExpr": {
+        // Only supported today as part of a qualified call like console.log(...)
+        throw new TypeError_(
+          `'${this.stringifyMember(expr)}' is not a value. Did you mean to call it?`,
+          expr.line
+        );
+      }
+      case "UnaryExpr": {
+        const t = this.checkExpr(expr.argument, scope);
+        if (expr.operator === "!") {
+          if (t !== "bool") throw new TypeError_(`'!' requires bool, got '${t}'`, expr.line);
+          expr.inferredType = "bool";
+          return "bool";
+        }
+        if (!isNumeric(t)) throw new TypeError_(`'${expr.operator}' requires a numeric type, got '${t}'`, expr.line);
+        expr.inferredType = t;
+        return t;
+      }
+      case "BinaryExpr": {
+        const lt = this.checkExpr(expr.left, scope);
+        const rt = this.checkExpr(expr.right, scope);
+        const comparisons = new Set(["==", "!=", "<", ">", "<=", ">="]);
+        const logical = new Set(["&&", "||"]);
+        if (logical.has(expr.operator)) {
+          if (lt !== "bool" || rt !== "bool") {
+            throw new TypeError_(`'${expr.operator}' requires bool operands, got '${lt}' and '${rt}'`, expr.line);
+          }
+          expr.inferredType = "bool";
+          return "bool";
+        }
+        if (comparisons.has(expr.operator)) {
+          if (lt === "string" && rt === "string") {
+            if (expr.operator !== "==" && expr.operator !== "!=") {
+              throw new TypeError_(`Only '==' and '!=' work on strings`, expr.line);
+            }
+          } else if (isNumeric(lt) && isNumeric(rt)) {
+            // fine
+          } else if (lt === "bool" && rt === "bool") {
+            if (expr.operator !== "==" && expr.operator !== "!=") {
+              throw new TypeError_(`Only '==' and '!=' work on bools`, expr.line);
+            }
+          } else {
+            throw new TypeError_(`Cannot compare '${lt}' and '${rt}'`, expr.line);
+          }
+          expr.inferredType = "bool";
+          return "bool";
+        }
+        // arithmetic: + - * / %
+        if (expr.operator === "+" && (lt === "string" || rt === "string")) {
+          if (lt !== "string" || rt !== "string") {
+            throw new TypeError_(`Cannot mix 'string' with '${lt === "string" ? rt : lt}' in '+'`, expr.line);
+          }
+          expr.inferredType = "string";
+          return "string";
+        }
+        if (!isNumeric(lt) || !isNumeric(rt)) {
+          throw new TypeError_(`'${expr.operator}' requires numeric operands, got '${lt}' and '${rt}'`, expr.line);
+        }
+        const result = widen(lt, rt);
+        expr.inferredType = result;
+        return result;
+      }
+      case "AssignExpr": {
+        if (expr.target.kind !== "Identifier") {
+          throw new TypeError_(`Left-hand side of assignment must be a variable`, expr.line);
+        }
+        const v = scope.lookup(expr.target.name);
+        if (!v) throw new TypeError_(`Unknown identifier '${expr.target.name}'`, expr.line);
+        if (v.isConst) throw new TypeError_(`Cannot assign to const '${expr.target.name}'`, expr.line);
+        const valueType = this.checkExpr(expr.value, scope);
+        if (expr.operator !== "=" && !isNumeric(v.type)) {
+          throw new TypeError_(`'${expr.operator}' requires a numeric variable`, expr.line);
+        }
+        if (!isAssignable(valueType, v.type)) {
+          throw new TypeError_(`Cannot assign '${valueType}' to '${v.type}' variable '${expr.target.name}'`, expr.line);
+        }
+        expr.target.inferredType = v.type;
+        expr.inferredType = v.type;
+        return v.type;
+      }
+      case "CallExpr": {
+        const calleeName = this.calleeName(expr.callee);
+        if (calleeName && HOST_FUNCTIONS[calleeName]) {
+          const sig = HOST_FUNCTIONS[calleeName];
+          if (expr.args.length !== 1) {
+            throw new TypeError_(`'${calleeName}' expects exactly 1 argument`, expr.line);
+          }
+          const argType = this.checkExpr(expr.args[0], scope);
+          if (!sig.overloads[argType]) {
+            throw new TypeError_(
+              `'${calleeName}' does not support argument type '${argType}'`,
+              expr.line
+            );
+          }
+          expr.resolvedKind = "host";
+          expr.inferredType = sig.returnType;
+          return sig.returnType;
+        }
+        if (calleeName && this.functions.has(calleeName)) {
+          const sig = this.functions.get(calleeName)!;
+          if (expr.args.length !== sig.params.length) {
+            throw new TypeError_(
+              `'${calleeName}' expects ${sig.params.length} argument(s), got ${expr.args.length}`,
+              expr.line
+            );
+          }
+          expr.args.forEach((arg, idx) => {
+            const t = this.checkExpr(arg, scope);
+            if (!isAssignable(t, sig.params[idx])) {
+              throw new TypeError_(
+                `Argument ${idx + 1} of '${calleeName}': expected '${sig.params[idx]}', got '${t}'`,
+                expr.line
+              );
+            }
+          });
+          expr.resolvedKind = "user";
+          expr.inferredType = sig.returnType;
+          return sig.returnType;
+        }
+        throw new TypeError_(`Unknown function '${calleeName ?? "<expr>"}'`, expr.line);
+      }
+    }
+  }
+
+  private calleeName(expr: N.Expr): string | null {
+    if (expr.kind === "Identifier") return expr.name;
+    if (expr.kind === "MemberExpr") {
+      const base = this.calleeName(expr.object);
+      return base ? `${base}.${expr.property}` : null;
+    }
+    return null;
+  }
+
+  private stringifyMember(expr: N.MemberExpr): string {
+    const base = expr.object.kind === "Identifier" ? expr.object.name : "<expr>";
+    return `${base}.${expr.property}`;
+  }
+}
+
+export function check(program: N.Program): CheckedProgram {
+  return new Checker().check(program);
+}
