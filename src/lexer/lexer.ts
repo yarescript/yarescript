@@ -12,9 +12,16 @@ const isIdentPart = (c: string) => /[A-Za-z0-9_]/.test(c);
 
 /**
  * Tokenizes yarescript (.ys) source into a flat list of tokens.
- * Comments (// ...) are discarded, not emitted as tokens.
+ *
+ * Comments are thrown away by default, because the parser has no opinions to
+ * offer about them. Pass `keepComments` and they come back as tokens, which is
+ * how `yare fmt` manages to reformat your code without eating your notes.
  */
-export function tokenize(source: string, fileName = "<source>"): Token[] {
+export function tokenize(
+  source: string,
+  fileName = "<source>",
+  keepComments = false
+): Token[] {
   const tokens: Token[] = [];
   let i = 0;
   let line = 1;
@@ -41,28 +48,39 @@ export function tokenize(source: string, fileName = "<source>"): Token[] {
     const startLine = line;
     const startCol = column;
 
+    // Whitespace. The lexer's least favourite character is all of them.
     if (c === " " || c === "\t" || c === "\r" || c === "\n") {
       advance();
       continue;
     }
 
-    // line comments
+    // line comments: everything from here to the newline is somebody's problem
+    // for later, and that somebody is not the compiler
     if (c === "/" && peek(1) === "/") {
-      while (i < source.length && peek() !== "\n") advance();
+      let text = "";
+      advance();
+      advance();
+      while (i < source.length && peek() !== "\n") text += advance();
+      if (keepComments) push(TokenType.LineComment, text, startLine, startCol);
       continue;
     }
 
-    // block comments
+    // block comments: the same idea, but able to sprawl over several lines and
+    // occasionally contain a commented-out experiment from six months ago
     if (c === "/" && peek(1) === "*") {
+      let text = "/*";
       advance();
       advance();
-      while (i < source.length && !(peek() === "*" && peek(1) === "/")) advance();
-      advance();
-      advance();
+      while (i < source.length && !(peek() === "*" && peek(1) === "/")) text += advance();
+      if (i >= source.length) {
+        throw new LexError(`Unterminated block comment in ${fileName}`, startLine, startCol);
+      }
+      text += advance() + advance(); // the closing */
+      if (keepComments) push(TokenType.BlockComment, text, startLine, startCol);
       continue;
     }
 
-    // strings
+    // strings: the only place a backslash is a personality trait
     if (c === '"') {
       advance();
       let value = "";
@@ -91,7 +109,8 @@ export function tokenize(source: string, fileName = "<source>"): Token[] {
       continue;
     }
 
-    // numbers
+    // numbers. Underscores are ignored, so 1_000_000 reads nicely and 1__0 is
+    // allowed but deserves what it gets.
     if (isDigit(c)) {
       let value = "";
       let isFloat = false;
@@ -108,7 +127,8 @@ export function tokenize(source: string, fileName = "<source>"): Token[] {
       continue;
     }
 
-    // identifiers / keywords
+    // identifiers and keywords. Longest match wins, which matters as soon as
+    // somebody writes `iffy` and expects it not to become `if` + `fy`.
     if (isIdentStart(c)) {
       let value = "";
       while (i < source.length && isIdentPart(peek())) value += advance();
@@ -121,7 +141,8 @@ export function tokenize(source: string, fileName = "<source>"): Token[] {
       continue;
     }
 
-    // two-char operators
+    // two-char operators, checked before the one-char ones so that `->` is an
+    // arrow and not a minus sign followed by greater-than
     const two = c + (peek(1) ?? "");
     const twoCharMap: Record<string, TokenType> = {
       "==": TokenType.Eq,

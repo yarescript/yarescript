@@ -7,6 +7,10 @@ import * as path from "path";
  * It plays the role package.json/tsconfig.json play for JS/TS projects,
  * but for a from-scratch toolchain, this is the *only* file the `yare`
  * CLI needs to build/run a project.
+ *
+ * Yes, it is JSON wearing a .yare costume. The extension is for you; the
+ * contents are for the parser, and the parser does not care what the file is
+ * called.
  */
 export interface YareConfig {
   name: string;

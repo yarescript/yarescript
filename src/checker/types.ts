@@ -1,8 +1,17 @@
-// yarescript's primitive type system.
-// Every variable/function, from "low level" (int, long, float raw numerics)
-// to "high level" (string, bool), is one of these.
+// yarescript's primitive type system, aka the seven (eight) kinds of thing a
+// variable is allowed to be. Everything from the low-level numerics up to
+// string is one of these. There is no `any` in this file and there never will
+// be; that is the whole idea.
 
-export type YType = "void" | "int" | "long" | "float" | "double" | "bool" | "string";
+export type YType =
+  | "void"
+  | "int"
+  | "long"
+  | "float"
+  | "double"
+  | "bool"
+  | "string"
+  | "char";
 
 export const PRIMITIVES: ReadonlySet<YType> = new Set([
   "void",
@@ -12,33 +21,38 @@ export const PRIMITIVES: ReadonlySet<YType> = new Set([
   "double",
   "bool",
   "string",
+  "char",
 ]);
 
 export function isValidType(name: string): name is YType {
   return PRIMITIVES.has(name as YType);
 }
 
+// Numeric means "WebAssembly has an instruction for doing maths to it".
+// `char` counts: it is an i32 with delusions of being a letter.
 export function isNumeric(t: YType): boolean {
-  return t === "int" || t === "long" || t === "float" || t === "double";
+  return t === "int" || t === "long" || t === "float" || t === "double" || t === "char";
 }
 
 export function isInteger(t: YType): boolean {
-  return t === "int" || t === "long";
+  return t === "int" || t === "long" || t === "char";
 }
 
 export function isFloatLike(t: YType): boolean {
   return t === "float" || t === "double";
 }
 
-// Rank used to figure out implicit widening: int -> long -> float -> double
+// Widening ranks. Numbers climb this ladder for free, one step at a time, and
+// never slide back down without an explicit `->` cast. Gravity with paperwork.
 const WIDEN_RANK: Record<YType, number> = {
   void: -1,
   bool: -1,
   string: -1,
-  int: 0,
-  long: 1,
-  float: 2,
-  double: 3,
+  char: 0,
+  int: 1,
+  long: 2,
+  float: 3,
+  double: 4,
 };
 
 /** Can a value of type `from` be implicitly used where `to` is expected? */
@@ -71,6 +85,8 @@ export function typeToWasmDescription(t: YType): string {
       return "f64";
     case "bool":
       return "i32 (0|1)";
+    case "char":
+      return "i32 (one code unit)";
     case "string":
       return "i32 (pointer into linear memory)";
     case "void":

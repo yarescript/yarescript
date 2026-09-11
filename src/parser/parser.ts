@@ -16,6 +16,10 @@ export class ParseError extends Error {
  *   functionDecl   -> visibility? "function" ":" type IDENT "(" params? ")" block
  *   varDecl        -> ("let" | "const") ":" type IDENT ("=" expr)? ";"
  *   block          -> "{" statement* "}"
+ *   cast           -> postfix ("->" type)*
+ *
+ * Hand written on purpose. A generated parser would be tidier and about a
+ * third as fun to debug."
  */
 export class Parser {
   private pos = 0;
@@ -53,7 +57,12 @@ export class Parser {
     while (!this.at(TokenType.EOF)) {
       if (this.at(TokenType.Import)) {
         body.push(this.parseImport());
-      } else if (this.at(TokenType.Public) || this.at(TokenType.Private) || this.at(TokenType.Function)) {
+      } else if (
+        this.at(TokenType.Public) ||
+        this.at(TokenType.Private) ||
+        this.at(TokenType.Export) ||
+        this.at(TokenType.Function)
+      ) {
         body.push(this.parseFunctionDecl());
       } else if (this.at(TokenType.Let) || this.at(TokenType.Const)) {
         body.push(this.parseVarDecl());
@@ -84,6 +93,9 @@ export class Parser {
     return { kind: "ImportDecl", names, from, line: start.line };
   }
 
+  // A type is an identifier that the checker has opinions about. The parser
+  // stays out of it, which is why `let: banana x = 1;` fails politely later
+  // instead of here.
   private parseType(): N.TypeNode {
     const t = this.peek();
     if (t.type === TokenType.Identifier) {
@@ -95,7 +107,9 @@ export class Parser {
 
   private parseFunctionDecl(): N.FunctionDecl {
     let visibility: N.Visibility = "public";
-    if (this.at(TokenType.Public)) {
+    // `export` is accepted as a friendlier spelling of `public`. Both mean the
+    // same thing: the host can call it.
+    if (this.at(TokenType.Public) || this.at(TokenType.Export)) {
       this.advance();
       visibility = "public";
     } else if (this.at(TokenType.Private)) {
@@ -135,13 +149,13 @@ export class Parser {
   }
 
   private parseBlock(): N.Block {
-    this.expect(TokenType.LBrace);
+    const brace = this.expect(TokenType.LBrace);
     const body: N.Stmt[] = [];
     while (!this.at(TokenType.RBrace)) {
       body.push(this.parseStatement());
     }
-    this.expect(TokenType.RBrace);
-    return { kind: "Block", body };
+    const close = this.expect(TokenType.RBrace);
+    return { kind: "Block", body, line: brace.line, endLine: close.line };
   }
 
   private parseStatement(): N.Stmt {
@@ -318,9 +332,21 @@ export class Parser {
 
   private parsePostfix(): N.Expr {
     let expr = this.parseCallOrMember();
-    while (this.at(TokenType.Increment) || this.at(TokenType.Decrement)) {
-      const t = this.advance();
-      expr = { kind: "UnaryExpr", operator: t.value, argument: expr, prefix: false, line: t.line };
+    for (;;) {
+      if (this.at(TokenType.Increment) || this.at(TokenType.Decrement)) {
+        const t = this.advance();
+        expr = { kind: "UnaryExpr", operator: t.value, argument: expr, prefix: false, line: t.line };
+        continue;
+      }
+      if (this.at(TokenType.Arrow)) {
+        // The cast arrow. Binds tighter than arithmetic, so `x -> int + 1`
+        // means `(x -> int) + 1`, which is what you meant anyway.
+        const t = this.advance();
+        const targetType = this.parseType();
+        expr = { kind: "CastExpr", expr, targetType, line: t.line };
+        continue;
+      }
+      break;
     }
     return expr;
   }

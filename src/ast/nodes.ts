@@ -1,4 +1,7 @@
 // AST definitions for the yarescript language.
+//
+// Every node carries the line it came from, because "type error" on its own is
+// a riddle and "type error on line 42" is something you can actually fix.
 
 export type Visibility = "public" | "private";
 
@@ -35,7 +38,8 @@ export type Node =
   | FloatLiteral
   | StringLiteral
   | BoolLiteral
-  | MemberExpr;
+  | MemberExpr
+  | CastExpr;
 
 export interface Program {
   kind: "Program";
@@ -71,6 +75,10 @@ export interface VarDecl {
 export interface Block {
   kind: "Block";
   body: Stmt[];
+  /** line of the opening brace, which `yare fmt` needs to place comments */
+  line: number;
+  /** line of the closing brace, which `yare fmt` needs to keep your spacing */
+  endLine: number;
 }
 
 export type Stmt =
@@ -140,7 +148,8 @@ export type Expr =
   | FloatLiteral
   | StringLiteral
   | BoolLiteral
-  | MemberExpr;
+  | MemberExpr
+  | CastExpr;
 
 export interface BinaryExpr {
   kind: "BinaryExpr";
@@ -178,6 +187,19 @@ export interface CallExpr {
   inferredType?: string;
   /** resolved by the checker: "host" for imported/builtin functions, "user" for yarescript functions */
   resolvedKind?: "host" | "user";
+}
+
+/**
+ * An explicit cast: `expr -> TYPE`.
+ * This is the only way to narrow a number, so if you lose precision it is
+ * because you typed the arrow yourself.
+ */
+export interface CastExpr {
+  kind: "CastExpr";
+  expr: Expr;
+  targetType: TypeNode;
+  line: number;
+  inferredType?: string;
 }
 
 export interface MemberExpr {

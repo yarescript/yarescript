@@ -1,9 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
-import { parse } from "./parser/parser";
 import { check } from "./checker/checker";
 import { generateWasm } from "./codegen/codegen";
 import { generateLoaderJs, generateBrowserLoaderJs } from "./runtime/loader-template";
+import { resolveModules } from "./modules/resolve";
 import { YareConfig } from "./cli/config";
 
 export interface BuildOptions {
@@ -19,22 +19,26 @@ export interface BuildResult {
   browserLoaderPath: string;
   watPath?: string;
   exportedFunctions: string[];
+  /** Every .ys file that went into the build, dependencies first. */
+  sourceFiles: string[];
 }
 
 /**
  * The whole yarescript build pipeline:
  *   .ys source -> tokens -> AST -> type-checked AST -> WebAssembly (binaryen)
- * The output lands in <outDir> (".yarescript" by default) alongside a
- * tiny loader.js that is the only JavaScript involved anywhere.
+ *
+ * Output lands in <outDir> (".yarescript" by default) next to a tiny loader.js,
+ * which is the only JavaScript involved anywhere in this repo's output. If you
+ * find application logic in that loader, that is a bug worth reporting.
  */
 export function build(opts: BuildOptions): BuildResult {
   const entryPath = path.resolve(opts.root, opts.config.entry);
   if (!fs.existsSync(entryPath)) {
     throw new Error(`Entry file not found: ${entryPath} (check "entry" in config.yare)`);
   }
-  const source = fs.readFileSync(entryPath, "utf8");
 
-  const program = parse(source, path.relative(opts.root, entryPath));
+  // The entry file and everything it imports, flattened into one program.
+  const { program, files } = resolveModules(entryPath);
   const checked = check(program);
   const result = generateWasm(checked);
 
@@ -70,5 +74,13 @@ export function build(opts: BuildOptions): BuildResult {
     fs.writeFileSync(watPath, result.wat);
   }
 
-  return { outDir, wasmPath, loaderPath, browserLoaderPath, watPath, exportedFunctions };
+  return {
+    outDir,
+    wasmPath,
+    loaderPath,
+    browserLoaderPath,
+    watPath,
+    exportedFunctions,
+    sourceFiles: files,
+  };
 }

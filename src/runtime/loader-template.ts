@@ -26,13 +26,21 @@ export function generateLoaderJs(opts: {
     console_log_int: `
   console_log_int(v) { console.log(v); },`,
     console_log_long: `
-  console_log_long(v) { console.log(v); },`,
+  console_log_long(v) { console.log(v.toString()); }, // toString: nobody wants to read "3n"`,
     console_log_float: `
   console_log_float(v) { console.log(v); },`,
     console_log_double: `
   console_log_double(v) { console.log(v); },`,
     console_log_bool: `
   console_log_bool(v) { console.log(Boolean(v)); },`,
+    console_log_char: `
+  console_log_char(v) { console.log(String.fromCharCode(v)); },`,
+    // A failed assert throws, which traps the module. That is the point: a
+    // test that is wrong should be impossible to scroll past.
+    assert: `
+  assert(v) {
+    if (!v) throw new Error("assertion failed");
+  },`,
   };
 
   const imports = opts.usedHostFunctions.map((name) => hostFnImpls[name] ?? `\n  ${name}() { throw new Error("host function '${name}' has no runtime implementation"); },`).join("");
@@ -90,13 +98,19 @@ export function generateBrowserLoaderJs(opts: {
     console_log_int: `
     console_log_int(v) { console.log(v); },`,
     console_log_long: `
-    console_log_long(v) { console.log(v); },`,
+    console_log_long(v) { console.log(v.toString()); },`,
     console_log_float: `
     console_log_float(v) { console.log(v); },`,
     console_log_double: `
     console_log_double(v) { console.log(v); },`,
     console_log_bool: `
     console_log_bool(v) { console.log(Boolean(v)); },`,
+    console_log_char: `
+    console_log_char(v) { console.log(String.fromCharCode(v)); },`,
+    assert: `
+    assert(v) {
+      if (!v) throw new Error("assertion failed");
+    },`,
   };
   const imports = opts.usedHostFunctions.map((name) => hostFnImpls[name] ?? `\n    ${name}() { throw new Error("host function '${name}' has no runtime implementation"); },`).join("");
 

@@ -1,52 +1,9 @@
 import assert from "node:assert";
 import { test } from "node:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import { parse } from "../parser/parser";
 import { check, TypeError_ } from "../checker/checker";
-import { generateWasm } from "../codegen/codegen";
 import { ParseError } from "../parser/parser";
-
-/**
- * Runs a yarescript source string through the full pipeline and executes
- * the resulting WebAssembly module, capturing whatever it logs via
- * console.log so the tests can assert on real program output, not just
- * on the fact that it compiled.
- */
-async function compileAndRun(source: string): Promise<{ logs: string[]; exports: WebAssembly.Exports }> {
-  const program = parse(source, "<test>");
-  const checked = check(program);
-  const { wasmBinary, usedHostFunctions } = generateWasm(checked);
-
-  const logs: string[] = [];
-  let memory: WebAssembly.Memory;
-  const readString = (ptr: number) => {
-    const view = new DataView((memory.buffer as ArrayBuffer));
-    const len = view.getUint32(ptr, true);
-    const bytes = new Uint8Array(memory.buffer, ptr + 4, len);
-    return Buffer.from(bytes).toString("utf8");
-  };
-
-  const env: Record<string, (...args: any[]) => any> = {
-    console_log_string: (ptr: number) => logs.push(readString(ptr)),
-    console_log_int: (v: number) => logs.push(String(v)),
-    console_log_long: (v: bigint) => logs.push(String(v)),
-    console_log_float: (v: number) => logs.push(String(v)),
-    console_log_double: (v: number) => logs.push(String(v)),
-    console_log_bool: (v: number) => logs.push(String(Boolean(v))),
-  };
-  for (const name of usedHostFunctions) {
-    if (!env[name]) env[name] = () => {};
-  }
-
-  const { instance } = await WebAssembly.instantiate(wasmBinary.slice().buffer, { env });
-  memory = instance.exports.memory as WebAssembly.Memory;
-  if (typeof (instance.exports as any).main === "function") {
-    (instance.exports as any).main();
-  }
-  return { logs, exports: instance.exports };
-}
+import { compileAndRun } from "./helpers";
 
 test("hello world prints a string", async () => {
   const { logs } = await compileAndRun(`

@@ -23,8 +23,8 @@ interface HostFunctionSig {
 }
 
 // The standard library available to every yarescript program without an
-// explicit `import`. Keeps the "batteries included but the loader stays
-// tiny" promise: these compile straight to WASM host imports, not JS glue.
+// explicit `import`. Batteries included, but the loader stays tiny: each of
+// these compiles straight to a WASM host import instead of JS glue.
 export const HOST_FUNCTIONS: Record<string, HostFunctionSig> = {
   "console.log": {
     qualifiedName: "console.log",
@@ -35,11 +35,28 @@ export const HOST_FUNCTIONS: Record<string, HostFunctionSig> = {
       float: "console_log_float",
       double: "console_log_double",
       bool: "console_log_bool",
+      char: "console_log_char",
     },
+    returnType: "void",
+  },
+  // assert(false) throws inside the host, which traps the module. That is how
+  // `yare test` finds out a test failed: loud, immediate, impossible to miss.
+  assert: {
+    qualifiedName: "assert",
+    overloads: { bool: "assert" },
     returnType: "void",
   },
 };
 
+/**
+ * The runtime reserves this prefix for the helpers codegen sneaks into your
+ * module (string concat, the allocator, and friends). You may not have one.
+ * It is nothing personal.
+ */
+export const RESERVED_PREFIX = "__yare_";
+
+// A map of names with a pointer to its parent: the oldest trick in compiler
+// writing, and still the best one anybody has come up with.
 class Scope {
   private vars = new Map<string, { type: YType; isConst: boolean }>();
   constructor(public parent: Scope | null = null) {}
@@ -69,6 +86,10 @@ export interface CheckedProgram {
  * Walks the AST, resolves every variable/function type, verifies
  * assignments & calls are legal, and annotates nodes with `inferredType`
  * so codegen never has to re-derive types.
+ *
+ * Everything codegen knows about types, it learned in here. So when codegen
+ * throws something that smells like a type error, the real bug is usually
+ * sitting upstream in this file, looking innocent.
  */
 export class Checker {
   private functions = new Map<string, FunctionSig>();
@@ -86,6 +107,12 @@ export class Checker {
           }
           return p.paramType.name as YType;
         });
+        if (decl.name.startsWith(RESERVED_PREFIX)) {
+          throw new TypeError_(
+            `Function name '${decl.name}' is reserved for the yarescript runtime. Pick another.`,
+            decl.line
+          );
+        }
         if (this.functions.has(decl.name)) {
           throw new TypeError_(`Function '${decl.name}' is already defined`, decl.line);
         }
@@ -225,9 +252,21 @@ export class Checker {
 
   private checkExpr(expr: N.Expr, scope: Scope): YType {
     switch (expr.kind) {
-      case "IntLiteral":
-        expr.inferredType = "int";
-        return "int";
+      case "IntLiteral": {
+        // A literal that does not fit an i32 becomes a long rather than
+        // quietly wrapping around. Surprises belong in birthday parties, not
+        // in number literals.
+        const v = expr.value;
+        if (v >= -2147483648 && v <= 2147483647) {
+          expr.inferredType = "int";
+          return "int";
+        }
+        if (v >= Number.MIN_SAFE_INTEGER && v <= Number.MAX_SAFE_INTEGER) {
+          expr.inferredType = "long";
+          return "long";
+        }
+        throw new TypeError_(`Integer literal ${v} does not even fit in a 'long'`, expr.line);
+      }
       case "FloatLiteral":
         expr.inferredType = "double";
         return "double";
@@ -260,6 +299,32 @@ export class Checker {
         if (!isNumeric(t)) throw new TypeError_(`'${expr.operator}' requires a numeric type, got '${t}'`, expr.line);
         expr.inferredType = t;
         return t;
+      }
+      case "CastExpr": {
+        if (!isValidType(expr.targetType.name)) {
+          throw new TypeError_(`Unknown cast target type '${expr.targetType.name}'`, expr.line);
+        }
+        const target = expr.targetType.name as YType;
+        if (target === "void") {
+          throw new TypeError_(`Cannot cast to 'void'. Use 'return;' if you want to stop here.`, expr.line);
+        }
+        const from = this.checkExpr(expr.expr, scope);
+        if (from === "string" || target === "string") {
+          throw new TypeError_(
+            `Cannot cast '${from}' to '${target}'. A string is a pointer plus a length, not a number.`,
+            expr.line
+          );
+        }
+        const bothNumeric = isNumeric(from) && isNumeric(target);
+        const fromBool = from === "bool" && isNumeric(target);
+        const toBool = target === "bool" && isNumeric(from);
+        if (!bothNumeric && !fromBool && !toBool) {
+          throw new TypeError_(`Cannot cast '${from}' to '${target}'`, expr.line);
+        }
+        // Narrowing is legal here because you typed the arrow yourself. If you
+        // truncate 3.9 down to 3, that is a decision you made in public.
+        expr.inferredType = target;
+        return target;
       }
       case "BinaryExpr": {
         const lt = this.checkExpr(expr.left, scope);

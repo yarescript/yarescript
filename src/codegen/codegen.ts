@@ -1,7 +1,7 @@
 import binaryen = require("binaryen");
 import * as N from "../ast/nodes";
 import { CheckedProgram, HOST_FUNCTIONS } from "../checker/checker";
-import { YType } from "../checker/types";
+import { isNumeric, widen, YType } from "../checker/types";
 
 /**
  * Lowers a type-checked yarescript AST straight to a WebAssembly module
@@ -9,6 +9,10 @@ import { YType } from "../checker/types";
  * here, ever. The only JS yarescript produces is the tiny host-side loader
  * (see src/runtime/loader-template.ts) that instantiates this module and hands it
  * a handful of host functions (console.log, etc).
+ *
+ * If you ever find this file emitting JavaScript, stop reading and file a bug:
+ * that is the one promise the language makes, and it does not get to be
+ * approximate.
  */
 
 const PAGE_SIZE = 65536;
@@ -28,6 +32,9 @@ function wasmType(t: YType): number {
     case "string":
       // strings are represented as an i32 pointer into linear memory
       // pointing at a `[u32 length][utf8 bytes...]` block.
+      return binaryen.i32;
+    case "char":
+      // a char is an i32 that has read too many novels
       return binaryen.i32;
     case "void":
       return binaryen.none;
@@ -104,6 +111,18 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   const segments: { offset: number; data: Uint8Array }[] = [];
   let heapCursor = 8; // leave the first bytes as a null-string guard
 
+  // Unnamed block helper. binaryen's typings insist a block always has a
+  // label, and most of ours do not care about having one.
+  const blk = (children: number[], type: number = binaryen.auto) =>
+    (mod.block as any)(null, children, type) as number;
+
+  // The string runtime is installed on demand, and the heap cursor global
+  // cannot be created until the string table's final size is known, which is
+  // after every function has been compiled. Order of operations, in code as
+  // in life.
+  const HEAP_GLOBAL = "__yare_heap";
+  let stringRuntimeInstalled = false;
+
   function internString(value: string): number {
     if (stringOffsets.has(value)) return stringOffsets.get(value)!;
     const bytes = Buffer.from(value, "utf8");
@@ -149,9 +168,13 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   // ---- Compile each function ----
   const exportedNames: string[] = [];
   const loopStack: { breakLabel: string; continueLabel: string }[] = [];
+  // Return statements are widened to whatever the enclosing function promised
+  // to return, so this follows the current function around.
+  let currentReturnType: YType = "void";
 
   for (const decl of checked.program.body) {
     if (decl.kind !== "FunctionDecl") continue;
+    currentReturnType = decl.returnType.name as YType;
     const paramTypes = decl.params.map((p) => p.paramType.name as YType);
     const scope = new FunctionScope(paramTypes);
     decl.params.forEach((p, idx) => scope.declareParam(p.name, idx, p.paramType.name as YType));
@@ -169,10 +192,17 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   }
 
   // ---- Memory ----
-  const memPages = Math.max(1, Math.ceil((heapCursor + PAGE_SIZE - 1) / PAGE_SIZE));
+  // The string table sits at the bottom, and the heap starts right after it.
+  // The maximum is left open so __yare_alloc can ask for more pages; a program
+  // that concatenates strings in a loop should be allowed to have them.
+  const heapStart = (heapCursor + 3) & ~3;
+  const memPages = Math.max(1, Math.ceil((heapStart + PAGE_SIZE - 1) / PAGE_SIZE));
+  if (stringRuntimeInstalled) {
+    mod.addGlobal(HEAP_GLOBAL, binaryen.i32, true, mod.i32.const(heapStart));
+  }
   mod.setMemory(
     memPages,
-    memPages,
+    -1, // no declared maximum, so __yare_alloc can keep asking for pages
     "memory",
     segments.map((s) => ({ offset: mod.i32.const(s.offset), data: s.data, passive: false })) as any
   );
@@ -201,6 +231,188 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
     return null;
   }
 
+  // ------------------------------------------------------------------
+  // Casts. WebAssembly has an instruction for every one of these, so a cast
+  // costs one opcode and zero apologies.
+  // ------------------------------------------------------------------
+  function castTo(target: YType, from: YType, value: number): number {
+    if (from === target) return value;
+    const src = wasmKind(from);
+    const dst = wasmKind(target);
+    if (dst === "i32") {
+      if (src === "i32") return value;
+      if (src === "i64") return mod.i32.wrap(value);
+      if (src === "f32") return mod.i32.trunc_s.f32(value);
+      return mod.i32.trunc_s.f64(value);
+    }
+    if (dst === "i64") {
+      if (src === "i32") return mod.i64.extend_s(value);
+      if (src === "i64") return value;
+      if (src === "f32") return mod.i64.trunc_s.f32(value);
+      return mod.i64.trunc_s.f64(value);
+    }
+    if (dst === "f32") {
+      if (src === "i32") return mod.f32.convert_s.i32(value);
+      if (src === "i64") return mod.f32.convert_s.i64(value);
+      if (src === "f32") return value;
+      return mod.f32.demote(value);
+    }
+    if (src === "i32") return mod.f64.convert_s.i32(value);
+    if (src === "i64") return mod.f64.convert_s.i64(value);
+    if (src === "f32") return mod.f64.promote(value);
+    return value;
+  }
+
+  // binaryen's i64.const wants (low, high) and quietly truncates a lone
+  // argument above 2^32, so the split happens here instead of by accident.
+  function i64Const(value: number): number {
+    const low = ((value % 4294967296) + 4294967296) % 4294967296;
+    const high = Math.floor(value / 4294967296);
+    return mod.i64.const(low, high);
+  }
+
+  function wasmKind(t: YType): "i32" | "i64" | "f32" | "f64" {
+    if (t === "long") return "i64";
+    if (t === "float") return "f32";
+    if (t === "double") return "f64";
+    return "i32"; // int, char, bool and string pointers all live in an i32
+  }
+
+  // ------------------------------------------------------------------
+  // The string runtime.
+  //
+  // Strings are length-prefixed UTF-8 in linear memory, so `+` and `==` need
+  // somewhere to put results. These four functions are that somewhere. They
+  // get added to the module only if your program actually uses a string
+  // operator, because a hello-world does not need a heap.
+  // ------------------------------------------------------------------
+  function ensureStringRuntime(): void {
+    if (stringRuntimeInstalled) return;
+    stringRuntimeInstalled = true;
+
+    const page = mod.i32.const(PAGE_SIZE);
+    const currentBytes = mod.i32.mul(mod.memory.size(), page);
+    const align4 = (x: number) => mod.i32.and(mod.i32.add(x, mod.i32.const(3)), mod.i32.const(-4));
+
+    // __yare_alloc(bytes) -> pointer to `bytes` of fresh, empty, yours-now
+    // memory. Bumps a cursor, and asks WebAssembly for more pages when the
+    // cursor runs off the end of the world.
+    mod.addFunction(
+      "__yare_alloc",
+      binaryen.createType([binaryen.i32]),
+      binaryen.i32,
+      [binaryen.i32, binaryen.i32, binaryen.i32],
+      blk([
+        mod.local.set(1, mod.global.get(HEAP_GLOBAL, binaryen.i32)),
+        mod.local.set(
+          2,
+          mod.i32.add(mod.local.get(1, binaryen.i32), mod.i32.add(mod.local.get(0, binaryen.i32), mod.i32.const(8)))
+        ),
+        mod.if(
+          mod.i32.gt_u(mod.local.get(2, binaryen.i32), currentBytes),
+          blk([
+            mod.local.set(
+              3,
+              mod.i32.div_u(
+                mod.i32.add(
+                  mod.i32.sub(mod.local.get(2, binaryen.i32), mod.i32.mul(mod.memory.size(), page)),
+                  mod.i32.const(PAGE_SIZE - 1)
+                ),
+                page
+              )
+            ),
+            // memory.grow hands back the old page count, or -1 when the host
+            // says no. A -1 here means out of memory, so we stop the program
+            // rather than scribble on somebody else's bytes.
+            mod.if(mod.i32.lt_s(mod.memory.grow(mod.local.get(3, binaryen.i32)), mod.i32.const(0)), mod.unreachable()),
+          ])
+        ),
+        mod.global.set(
+          HEAP_GLOBAL,
+          align4(mod.i32.add(mod.local.get(1, binaryen.i32), mod.local.get(0, binaryen.i32)))
+        ),
+        mod.return(mod.local.get(1, binaryen.i32)),
+      ])
+    );
+
+    // __yare_str_alloc(len) -> pointer to a string header plus `len` bytes.
+    mod.addFunction(
+      "__yare_str_alloc",
+      binaryen.createType([binaryen.i32]),
+      binaryen.i32,
+      [binaryen.i32],
+      blk([
+        mod.local.set(1, mod.call("__yare_alloc", [mod.i32.add(mod.local.get(0, binaryen.i32), mod.i32.const(4))], binaryen.i32)),
+        mod.i32.store(0, 4, mod.local.get(1, binaryen.i32), mod.local.get(0, binaryen.i32)),
+        mod.return(mod.local.get(1, binaryen.i32)),
+      ])
+    );
+
+    // __yare_str_concat(a, b) -> a brand new string. Neither input is harmed.
+    mod.addFunction(
+      "__yare_str_concat",
+      binaryen.createType([binaryen.i32, binaryen.i32]),
+      binaryen.i32,
+      [binaryen.i32, binaryen.i32, binaryen.i32],
+      blk([
+        mod.local.set(2, mod.i32.load(0, 4, mod.local.get(0, binaryen.i32))),
+        mod.local.set(3, mod.i32.load(0, 4, mod.local.get(1, binaryen.i32))),
+        mod.local.set(
+          4,
+          mod.call("__yare_str_alloc", [mod.i32.add(mod.local.get(2, binaryen.i32), mod.local.get(3, binaryen.i32))], binaryen.i32)
+        ),
+        mod.memory.copy(
+          mod.i32.add(mod.local.get(4, binaryen.i32), mod.i32.const(4)),
+          mod.i32.add(mod.local.get(0, binaryen.i32), mod.i32.const(4)),
+          mod.local.get(2, binaryen.i32)
+        ),
+        mod.memory.copy(
+          mod.i32.add(mod.i32.add(mod.local.get(4, binaryen.i32), mod.i32.const(4)), mod.local.get(2, binaryen.i32)),
+          mod.i32.add(mod.local.get(1, binaryen.i32), mod.i32.const(4)),
+          mod.local.get(3, binaryen.i32)
+        ),
+        mod.return(mod.local.get(4, binaryen.i32)),
+      ])
+    );
+
+    // __yare_str_eq(a, b) -> 1 when the two strings hold the same bytes.
+    // Byte by byte, because two pointers being equal is not the same thing as
+    // two strings being equal, and that mistake is a classic.
+    const done = "yare_eq_done";
+    const loop = "yare_eq_loop";
+    mod.addFunction(
+      "__yare_str_eq",
+      binaryen.createType([binaryen.i32, binaryen.i32]),
+      binaryen.i32,
+      [binaryen.i32, binaryen.i32, binaryen.i32],
+      blk([
+        mod.block(done, [
+          mod.if(mod.i32.eq(mod.local.get(0, binaryen.i32), mod.local.get(1, binaryen.i32)), mod.return(mod.i32.const(1))),
+          mod.local.set(2, mod.i32.load(0, 4, mod.local.get(0, binaryen.i32))),
+          mod.local.set(3, mod.i32.load(0, 4, mod.local.get(1, binaryen.i32))),
+          mod.if(mod.i32.ne(mod.local.get(2, binaryen.i32), mod.local.get(3, binaryen.i32)), mod.return(mod.i32.const(0))),
+          mod.local.set(4, mod.i32.const(0)),
+          mod.loop(
+            loop,
+            blk([
+              mod.br(done, mod.i32.ge_u(mod.local.get(4, binaryen.i32), mod.local.get(2, binaryen.i32))),
+              mod.if(
+                mod.i32.ne(
+                  mod.i32.load8_u(0, 1, mod.i32.add(mod.i32.add(mod.local.get(0, binaryen.i32), mod.i32.const(4)), mod.local.get(4, binaryen.i32))),
+                  mod.i32.load8_u(0, 1, mod.i32.add(mod.i32.add(mod.local.get(1, binaryen.i32), mod.i32.const(4)), mod.local.get(4, binaryen.i32)))
+                ),
+                mod.return(mod.i32.const(0))
+              ),
+              mod.local.set(4, mod.i32.add(mod.local.get(4, binaryen.i32), mod.i32.const(1))),
+              mod.br(loop),
+            ])
+          ),
+        ]),
+        mod.return(mod.i32.const(1)),
+      ])
+    );
+  }
+
   function compileBlock(block: N.Block, scope: FunctionScope): number {
     const child = scope.child();
     const stmts = block.body.map((s) => compileStmt(s, child));
@@ -213,7 +425,11 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
         const type = stmt.varType.name as YType;
         const index = scope.declareLocal(stmt.name, type);
         if (stmt.init) {
-          return mod.local.set(index, compileExpr(stmt.init, scope));
+          // `let: long y = 2;` is legal yarescript, and an i32.const sitting in
+          // an i64 local is not legal WebAssembly. The checker said yes, so
+          // codegen has to do the actual widening.
+          const initType = (stmt.init as any).inferredType as YType;
+          return mod.local.set(index, castTo(type, initType, compileExpr(stmt.init, scope)));
         }
         return mod.nop();
       }
@@ -225,8 +441,11 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
         if (!exprType || exprType === "void") return mod.drop === undefined ? value : dropIfNeeded(value, exprType);
         return dropIfNeeded(value, exprType);
       }
-      case "ReturnStmt":
-        return mod.return(stmt.argument ? compileExpr(stmt.argument, scope) : undefined);
+      case "ReturnStmt": {
+        if (!stmt.argument) return mod.return(undefined);
+        const t = (stmt.argument as any).inferredType as YType;
+        return mod.return(castTo(currentReturnType, t, compileExpr(stmt.argument, scope)));
+      }
       case "IfStmt": {
         const test = compileExpr(stmt.test, scope);
         const cons = compileBlock(stmt.consequent, scope);
@@ -298,7 +517,7 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   function compileExpr(expr: N.Expr, scope: FunctionScope): number {
     switch (expr.kind) {
       case "IntLiteral":
-        return mod.i32.const(expr.value);
+        return expr.inferredType === "long" ? i64Const(expr.value) : mod.i32.const(expr.value);
       case "FloatLiteral":
         return mod.f64.const(expr.value);
       case "BoolLiteral":
@@ -308,6 +527,11 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
       case "Identifier": {
         const info = scope.lookup(expr.name);
         return mod.local.get(info.index, wasmType(info.type));
+      }
+      case "CastExpr": {
+        const from = (expr.expr as any).inferredType as YType;
+        const target = expr.targetType.name as YType;
+        return castTo(target, from, compileExpr(expr.expr, scope));
       }
       case "MemberExpr":
         throw new Error("codegen: bare member expressions are not values (checker should have caught this)");
@@ -364,7 +588,8 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
           const current = mod.local.get(info.index, wasmType(info.type));
           value = compileBinary(op, info.type, (expr.value as any).inferredType, current, value);
         }
-        const setInstr = mod.local.set(info.index, value);
+        const valueType = (expr.value as any).inferredType as YType;
+        const setInstr = mod.local.set(info.index, castTo(info.type, valueType, value));
         return (mod.block as any)(null, [setInstr, mod.local.get(info.index, wasmType(info.type))], wasmType(info.type));
       }
       case "CallExpr": {
@@ -398,40 +623,57 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   }
 
   function compileBinary(operator: string, lt: YType, rt: YType, l: number, r: number): number {
-    // string concatenation & comparison go through host-assisted runtime
-    // helpers because linear-memory string ops need heap management.
+    // String operators go through the runtime helpers, because two pointers
+    // and a length prefix are not something you want to open-code at every
+    // call site.
     if (lt === "string" || rt === "string") {
-      throw new Error("codegen: string operators ('+', '==') are not implemented yet in this build");
+      ensureStringRuntime();
+      switch (operator) {
+        case "+":
+          return mod.call("__yare_str_concat", [l, r], binaryen.i32);
+        case "==":
+          return mod.call("__yare_str_eq", [l, r], binaryen.i32);
+        case "!=":
+          return mod.i32.eqz(mod.call("__yare_str_eq", [l, r], binaryen.i32));
+        default:
+          throw new Error(`codegen: '${operator}' is not defined for string`);
+      }
     }
-    const t = lt; // after widening in checker, lt should already match rt for arithmetic;
+    // The checker picked the result type by widening; codegen has to actually
+    // perform that widening on the operands, or we hand WebAssembly an
+    // f64.add with an i32 in it and it (rightly) refuses to build.
+    const bothNumeric = isNumeric(lt) && isNumeric(rt);
+    const t = bothNumeric ? widen(lt, rt) : lt;
+    const lv = bothNumeric ? castTo(t, lt, l) : l;
+    const rv = bothNumeric ? castTo(t, rt, r) : r;
     const bin = binOps(t);
     switch (operator) {
       case "+":
-        return bin.add(l, r);
+        return bin.add(lv, rv);
       case "-":
-        return bin.sub(l, r);
+        return bin.sub(lv, rv);
       case "*":
-        return bin.mul(l, r);
+        return bin.mul(lv, rv);
       case "/":
-        return bin.div(l, r);
+        return bin.div(lv, rv);
       case "%":
-        return bin.rem(l, r);
+        return bin.rem(lv, rv);
       case "==":
-        return bin.eq(l, r);
+        return bin.eq(lv, rv);
       case "!=":
-        return bin.ne(l, r);
+        return bin.ne(lv, rv);
       case "<":
-        return bin.lt(l, r);
+        return bin.lt(lv, rv);
       case ">":
-        return bin.gt(l, r);
+        return bin.gt(lv, rv);
       case "<=":
-        return bin.le(l, r);
+        return bin.le(lv, rv);
       case ">=":
-        return bin.ge(l, r);
+        return bin.ge(lv, rv);
       case "&&":
-        return mod.i32.and(l, r);
+        return mod.i32.and(lv, rv);
       case "||":
-        return mod.i32.or(l, r);
+        return mod.i32.or(lv, rv);
       default:
         throw new Error(`codegen: unsupported binary operator '${operator}'`);
     }
@@ -442,7 +684,7 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   }
 
   function binOps(t: YType) {
-    if (t === "int" || t === "bool") {
+    if (t === "int" || t === "bool" || t === "char") {
       return {
         add: mod.i32.add,
         sub: mod.i32.sub,
@@ -560,6 +802,9 @@ function walk(node: N.Node, visit: (n: N.Node) => void): void {
     case "CallExpr":
       walk(node.callee, visit);
       node.args.forEach((a) => walk(a, visit));
+      break;
+    case "CastExpr":
+      walk(node.expr, visit);
       break;
     case "MemberExpr":
       walk(node.object, visit);

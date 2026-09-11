@@ -1,0 +1,14 @@
+import { square, sumTo } from "../src/math.ys";
+
+// A test passes by not blowing up. assert(false) blows up on purpose.
+public function: void test_square() {
+    assert(square(6) == 36);
+}
+
+public function: void test_square_of_negative() {
+    assert(square(0 - 7) == 49);
+}
+
+public function: void test_sumTo() {
+    assert(sumTo(10) == 55);
+}

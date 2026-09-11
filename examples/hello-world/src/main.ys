@@ -1,4 +1,3 @@
-public function: void main() {
-    // This is the entry point. yare run calls main() for you.
+public function: void main() {  // I didnt use, int becuase I am lazy
     console.log("hello, world");
 }

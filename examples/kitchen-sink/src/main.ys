@@ -28,23 +28,17 @@ public function: double average(double a, double b) {
 
 public function: void main() {
     console.log("yarescript kitchen sink");
-
     let: int fibResult = fib(10);
     console.log(fibResult);
-
     let: int total = sumTo(100);
     console.log(total);
-
     console.log(isEven(total));
-
     let: double avg = average(3.5, 4.5);
     console.log(avg);
-
     let: int counter = 0;
     while (counter < 5) {
         console.log(counter);
         counter = counter + 1;
     }
-
     console.log("done");
 }

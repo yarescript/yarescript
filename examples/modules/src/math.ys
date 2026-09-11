@@ -1,0 +1,17 @@
+// Helpers that live in their own file, because main.ys was getting crowded
+// and scrolling is a form of cardio nobody asked for.
+public function: int square(int x) {
+    return x * x;
+}
+
+public function: int sumTo(int n) {
+    let: int total = 0;
+    for (let: int i = 1; i <= n; i++) {
+        total += i;
+    }
+    return total;
+}
+
+public function: string shout(string s) {
+    return s + "!";
+}

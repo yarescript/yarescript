@@ -6,6 +6,9 @@ import { defaultConfig, findConfig, loadConfig, writeConfig, DEFAULT_CONFIG_FILE
 import { LexError } from "../lexer/lexer";
 import { ParseError } from "../parser/parser";
 import { TypeError_ } from "../checker/checker";
+import { ModuleError, findSourceFiles } from "../modules/resolve";
+import { format } from "../fmt/formatter";
+import { runTestFile } from "../test-runner/runner";
 
 const VERSION = "0.1.0";
 
@@ -16,6 +19,8 @@ Usage:
   yare init [name]        Scaffold a new yarescript project (writes ${DEFAULT_CONFIG_FILENAME})
   yare build [--wat]      Compile the project entry to WebAssembly + a tiny JS loader
   yare run [--wat]        Build, then execute the compiled program in Node
+  yare fmt [--check]      Reformat every .ys file in the project (--check only reports)
+  yare test               Run every public test* function in every *.test.ys file
   yare version            Print the compiler version
 
 yarescript is written by Arunkumar (github.com/Seigh-sword) and maintained
@@ -23,6 +28,8 @@ by Surya (github.com/suripewepedie).
 `);
 }
 
+// Errors the compiler understands get a tidy red one-liner. Anything else is a
+// compiler bug and gets the full stack trace it deserves.
 function fail(message: string): never {
   console.error(`\x1b[31merror:\x1b[0m ${message}`);
   process.exit(1);
@@ -66,6 +73,7 @@ function cmdBuild(flags: Set<string>) {
     console.log(`Compiled ${config.entry} -> ${path.relative(root, result.wasmPath)}`);
     console.log(`Loader:   ${path.relative(root, result.loaderPath)}`);
     if (result.watPath) console.log(`WAT:      ${path.relative(root, result.watPath)}`);
+    if (result.sourceFiles.length > 1) console.log(`Sources:  ${result.sourceFiles.length} files`);
     console.log(`Exports:  ${result.exportedFunctions.join(", ") || "(none)"}`);
   } catch (err) {
     reportCompileError(err);
@@ -88,8 +96,81 @@ async function cmdRun(flags: Set<string>) {
   }
 }
 
+function cmdFmt(flags: Set<string>, files: string[]) {
+  const { root } = loadProjectConfig();
+  const targets = files.length
+    ? files.map((f) => path.resolve(root, f))
+    : findSourceFiles(root);
+  if (!targets.length) {
+    console.log("No .ys files to format.");
+    return;
+  }
+  const checkOnly = flags.has("--check");
+  let changed = 0;
+  for (const file of targets) {
+    const original = fs.readFileSync(file, "utf8");
+    let formatted: string;
+    try {
+      formatted = format(original, path.relative(root, file));
+    } catch (err) {
+      reportCompileError(err);
+    }
+    if (formatted === original) continue;
+    changed++;
+    const rel = path.relative(process.cwd(), file);
+    if (checkOnly) {
+      console.log(`would reformat ${rel}`);
+    } else {
+      fs.writeFileSync(file, formatted, "utf8");
+      console.log(`reformatted ${rel}`);
+    }
+  }
+  if (checkOnly && changed) {
+    console.error(`\x1b[31merror:\x1b[0m ${changed} file(s) need formatting. Run "yare fmt".`);
+    process.exit(1);
+  }
+  if (!changed) console.log(checkOnly ? "All formatted already." : "Nothing to do.");
+}
+
+async function cmdTest() {
+  const { root } = loadProjectConfig();
+  const files = findSourceFiles(root, (f) => f.endsWith(".test.ys"));
+  if (!files.length) {
+    console.log(`No *.test.ys files under ${path.relative(process.cwd(), root) || "."}.`);
+    return;
+  }
+  let pass = 0;
+  let fail = 0;
+  for (const file of files) {
+    const rel = path.relative(process.cwd(), file);
+    let results;
+    try {
+      results = await runTestFile(file);
+    } catch (err) {
+      reportCompileError(err);
+    }
+    if (!results.length) console.log(`${rel}: no test functions`);
+    for (const r of results) {
+      if (r.ok) {
+        pass++;
+        console.log(`ok    ${r.name} (${rel})`);
+      } else {
+        fail++;
+        console.error(`\x1b[31mFAIL\x1b[0m  ${r.name} (${rel}): ${r.error}`);
+      }
+    }
+  }
+  console.log(`\n${pass} passed, ${fail} failed`);
+  if (fail) process.exit(1);
+}
+
 function reportCompileError(err: unknown): never {
-  if (err instanceof LexError || err instanceof ParseError || err instanceof TypeError_) {
+  if (
+    err instanceof LexError ||
+    err instanceof ParseError ||
+    err instanceof TypeError_ ||
+    err instanceof ModuleError
+  ) {
     fail(err.message);
   }
   throw err;
@@ -109,6 +190,12 @@ async function main() {
       break;
     case "run":
       await cmdRun(flags);
+      break;
+    case "fmt":
+      cmdFmt(flags, positional);
+      break;
+    case "test":
+      await cmdTest();
       break;
     case "version":
     case "--version":

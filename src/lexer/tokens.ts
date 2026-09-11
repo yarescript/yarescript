@@ -65,8 +65,12 @@ export enum TokenType {
   Increment = "Increment",
   Decrement = "Decrement",
 
-  // misc
+  // comments. Only ever produced when the lexer is asked to keep them, which
+  // today means one caller: `yare fmt`, who promises not to lose your notes.
   LineComment = "LineComment",
+  BlockComment = "BlockComment",
+
+  // misc
   EOF = "EOF",
 }
 
@@ -98,8 +102,10 @@ export const KEYWORDS: Record<string, TokenType> = {
   new: TokenType.New,
 };
 
-// Primitive yarescript types. Kept separate from KEYWORDS so identifiers
-// like a variable named `int_count` still lex fine.
+// Primitive yarescript types. Kept separate from KEYWORDS so that identifiers
+// like a variable named `int_count` still lex fine. The real gatekeeper for
+// type names is the checker; this list is here so editors have something to
+// highlight.
 export const PRIMITIVE_TYPES = new Set([
   "void",
   "int",
