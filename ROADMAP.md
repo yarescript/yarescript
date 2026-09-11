@@ -21,11 +21,27 @@ These used to be on this list and are now in the compiler, documented in
   for failing on purpose.
 - `char`, `export` as a spelling of `public`, `assert`, and integer literals
   wide enough to become `long` on their own.
+- String indexing (`s[i]`) and `s.length`, both bounds checked, plus `char`
+  concatenation from either side.
+- A standard library you import with `@modules.import("str")`, shipped as
+  yarescript source and linked function by function.
+- `.yare/` build output with `config-lock.yare` and `dep/build/*.yare.dep`
+  object files. Import a module you never call and none of it is linked.
+- Error messages that suggest the name you were reaching for.
+- Apache License 2.0.
 
 ## Near-term (language completeness)
 
+- [ ] The rest of the numeric ladder: `u8`, `u16`, `u32`, `u64`, `i8`, and
+      `i16`. `char`, `int`, `long`, `float`, and `double` are here; the narrow
+      and unsigned widths are not, and "every type from low level to high
+      level" is not true until they are.
 - [ ] Arrays (`int[]`, `string[]`, ...) and a fixed-size struct/record
       type for "high level" data, not just scalars.
+- [ ] Real json, xml, and toml documents. The `json` module can build json
+      today (`ofInt`, `ofBool`, `quote`). Reading a document back needs a value
+      type that can hold "a number or a list or a map", which means structs
+      first. That is the blocker, and it is the only one.
 - [ ] `struct`/custom types, and eventually a minimal generics story.
 - [ ] Ordering comparisons on strings, once there is a collation answer
       worth defending.

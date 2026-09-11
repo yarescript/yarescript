@@ -29,6 +29,7 @@ export type Node =
   | ContinueStmt
   | ExprStmt
   | ImportDecl
+  | DirectiveDecl
   | BinaryExpr
   | UnaryExpr
   | AssignExpr
@@ -39,11 +40,27 @@ export type Node =
   | StringLiteral
   | BoolLiteral
   | MemberExpr
-  | CastExpr;
+  | CastExpr
+  | IndexExpr;
 
 export interface Program {
   kind: "Program";
-  body: (FunctionDecl | VarDecl | ImportDecl)[];
+  body: (FunctionDecl | VarDecl | ImportDecl | DirectiveDecl)[];
+}
+
+/**
+ * A compiler directive: `@modules.import("json")`.
+ *
+ * Directives talk to the build, not to the program. They are the only place
+ * yarescript borrows punctuation from the decorator world, and they are
+ * deliberately few: `modules.import` is the whole list today.
+ */
+export interface DirectiveDecl {
+  kind: "DirectiveDecl";
+  namespace: string;
+  action: string;
+  args: string[];
+  line: number;
 }
 
 export interface ImportDecl {
@@ -149,7 +166,8 @@ export type Expr =
   | StringLiteral
   | BoolLiteral
   | MemberExpr
-  | CastExpr;
+  | CastExpr
+  | IndexExpr;
 
 export interface BinaryExpr {
   kind: "BinaryExpr";
@@ -198,6 +216,18 @@ export interface CastExpr {
   kind: "CastExpr";
   expr: Expr;
   targetType: TypeNode;
+  line: number;
+  inferredType?: string;
+}
+
+/**
+ * Indexing: `name[i]`. On a string this reads one char, with a bounds check
+ * that traps rather than reading your neighbour's bytes.
+ */
+export interface IndexExpr {
+  kind: "IndexExpr";
+  object: Expr;
+  index: Expr;
   line: number;
   inferredType?: string;
 }

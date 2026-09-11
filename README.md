@@ -70,13 +70,18 @@ Working right now:
 - Binaryen-backed codegen emitting real, runnable `.wasm`
 - Functions, `let`/`const`, `if`/`else`, `while`, `for`, `break`, `continue`,
   recursion, operator precedence
-- Strings you can concatenate and compare, on a small allocator that grows the
-  module when it runs out of room
+- Strings you can concatenate and compare, index with `s[i]`, and measure with
+  `s.length`, on a small allocator that grows the module when it runs out of
+  room
+- A standard library you import with `@modules.import("str")`, linked function
+  by function into `.yare/dep/build/*.yare.dep`
 - Explicit casts with `->`, so narrowing a number is something you choose
 - Cross-file modules: `import { helper } from "./helper.ys"`
 - `console.log` and `assert` as host imports, which proves yarescript can talk
   to the outside world without becoming JavaScript
 - `yare init` / `yare build` / `yare run` / `yare fmt` / `yare test` CLI
+- Error messages that suggest what you meant: `prntln` gets pointed at
+  `console.log`, `totl` at `total`, `integ` at `int`
 - `config.yare` project manifest
 - A small generated loader for both Node and the browser
 
@@ -118,11 +123,48 @@ my-project/
   config.yare          # JSON project manifest (name, entry, libs, target)
   src/
     main.ys            # entry point
-  .yarescript/         # build output (generated, gitignore this)
+  .yare/               # build output (generated, gitignore this)
+    config-lock.yare   # what was linked, and the hash it came from
     my-project.wasm    # your compiled program
     loader.js          # tiny Node loader (zero app logic)
     loader.browser.js  # tiny browser loader (zero app logic)
+    dep/
+      build/
+        str.yare.dep   # a compiled module: an object file, for wasm
 ```
+
+## Modules and .yare.dep files
+
+The bundled modules live in [`stdlib/`](./stdlib) and you pull them in with a
+directive:
+
+```
+@modules.import("str");
+@modules.import("math");
+
+public function: void main() {
+    console.log(str.upper("yarescript"));
+    console.log(math.sqrt(144.0));
+}
+```
+
+`yare build` compiles each module into `.yare/dep/build/<name>.yare.dep`, which
+is an object file for WebAssembly: a function index, a source hash, and the
+pieces the linker needs. Then it links **only what you called**.
+
+```
+$ yare build
+Compiled src/main.ys -> .yare/stdlib.wasm
+Module:   str 0.1.0 (2 of 7 functions linked)
+Module:   math 0.1.0 (2 of 5 functions linked)
+Lock:     .yare/config-lock.yare
+Exports:  main
+```
+
+Import `json` and never call it, and none of it lands in your binary. Call one
+function that calls another and both come along, because the linker follows the
+calls. `config-lock.yare` records exactly which functions went in, with the hash
+of the module they came from, so a build can be reproduced later.
 
 `config.yare` is JSON, despite the extension. It is yarescript's answer to
 `package.json` and `tsconfig.json`, and the `libs` section in it is how you will
@@ -163,7 +205,8 @@ public function: void main() {
   (`int`, `long`, `float`, `double`, `char`) up through `bool` and `string`.
   There is no `any` and no implicit `undefined`.
 - Numbers widen on their own and narrow only when you ask: `let: int n = pi -> int;`
-- Strings concatenate with `+` and compare with `==`.
+- Strings concatenate with `+` and compare with `==`, and you can index them:
+  `s[0]` is a `char` and `s.length` is an `int`.
 - Other files come in with `import { helper } from "./helper.ys";`
 - `main()` is required, and it is what `yare run` calls.
 
@@ -214,4 +257,4 @@ Something failing in a release, an example, or the docs? That lands with Surya.
 
 ## License
 
-TBD.
+Apache License 2.0. See [LICENSE](./LICENSE).

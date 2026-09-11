@@ -16,7 +16,7 @@ export interface YareConfig {
   name: string;
   version: string;
   entry: string; // path to the entry .ys file, e.g. "src/main.ys"
-  outDir: string; // where compiled output goes, defaults to ".yarescript"
+  outDir: string; // where compiled output goes, defaults to ".yare"
   target: "wasm";
   libs: Record<string, string>; // dependency name -> version/spec (future: npm-like registry)
 }
@@ -28,7 +28,7 @@ export function defaultConfig(name: string): YareConfig {
     name,
     version: "0.1.0",
     entry: "src/main.ys",
-    outDir: ".yarescript",
+    outDir: ".yare",
     target: "wasm",
     libs: {},
   };
@@ -61,7 +61,7 @@ export function loadConfig(configPath: string): { config: YareConfig; root: stri
       name: config.name,
       version: config.version ?? "0.1.0",
       entry: config.entry,
-      outDir: config.outDir ?? ".yarescript",
+      outDir: config.outDir ?? ".yare",
       target: "wasm",
       libs: config.libs ?? {},
     },

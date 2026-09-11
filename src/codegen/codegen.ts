@@ -375,6 +375,49 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
       ])
     );
 
+    // __yare_str_push_char(s, c) -> s with one more byte on the end.
+    mod.addFunction(
+      "__yare_str_push_char",
+      binaryen.createType([binaryen.i32, binaryen.i32]),
+      binaryen.i32,
+      [binaryen.i32, binaryen.i32],
+      blk([
+        mod.local.set(2, mod.i32.load(0, 4, mod.local.get(0, binaryen.i32))),
+        mod.local.set(3, mod.call("__yare_str_alloc", [mod.i32.add(mod.local.get(2, binaryen.i32), mod.i32.const(1))], binaryen.i32)),
+        mod.memory.copy(
+          mod.i32.add(mod.local.get(3, binaryen.i32), mod.i32.const(4)),
+          mod.i32.add(mod.local.get(0, binaryen.i32), mod.i32.const(4)),
+          mod.local.get(2, binaryen.i32)
+        ),
+        mod.i32.store8(
+          0,
+          1,
+          mod.i32.add(mod.i32.add(mod.local.get(3, binaryen.i32), mod.i32.const(4)), mod.local.get(2, binaryen.i32)),
+          mod.local.get(1, binaryen.i32)
+        ),
+        mod.return(mod.local.get(3, binaryen.i32)),
+      ])
+    );
+
+    // __yare_char_push_str(c, s) -> one byte, then s. Same idea, other end.
+    mod.addFunction(
+      "__yare_char_push_str",
+      binaryen.createType([binaryen.i32, binaryen.i32]),
+      binaryen.i32,
+      [binaryen.i32, binaryen.i32],
+      blk([
+        mod.local.set(2, mod.i32.load(0, 4, mod.local.get(1, binaryen.i32))),
+        mod.local.set(3, mod.call("__yare_str_alloc", [mod.i32.add(mod.local.get(2, binaryen.i32), mod.i32.const(1))], binaryen.i32)),
+        mod.i32.store8(0, 1, mod.i32.add(mod.local.get(3, binaryen.i32), mod.i32.const(4)), mod.local.get(0, binaryen.i32)),
+        mod.memory.copy(
+          mod.i32.add(mod.i32.add(mod.local.get(3, binaryen.i32), mod.i32.const(4)), mod.i32.const(1)),
+          mod.i32.add(mod.local.get(1, binaryen.i32), mod.i32.const(4)),
+          mod.local.get(2, binaryen.i32)
+        ),
+        mod.return(mod.local.get(3, binaryen.i32)),
+      ])
+    );
+
     // __yare_str_eq(a, b) -> 1 when the two strings hold the same bytes.
     // Byte by byte, because two pointers being equal is not the same thing as
     // two strings being equal, and that mistake is a classic.
@@ -533,8 +576,45 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
         const target = expr.targetType.name as YType;
         return castTo(target, from, compileExpr(expr.expr, scope));
       }
-      case "MemberExpr":
+      case "IndexExpr": {
+        // Bounds checked, because reading past the end of a string is how
+        // programs find out what their neighbours were storing.
+        const idxType = (expr.index as any).inferredType as YType;
+        const ptrLocal = scope.declareLocal(`__yare_idx_ptr_${labelId++}`, "int");
+        const idxLocal = scope.declareLocal(`__yare_idx_at_${labelId++}`, "int");
+        const len = mod.i32.load(0, 4, mod.local.get(ptrLocal, binaryen.i32));
+        const at = mod.i32.load8_u(
+          0,
+          1,
+          mod.i32.add(
+            mod.i32.add(mod.local.get(ptrLocal, binaryen.i32), mod.i32.const(4)),
+            mod.local.get(idxLocal, binaryen.i32)
+          )
+        );
+        return blk(
+          [
+            mod.local.set(ptrLocal, compileExpr(expr.object, scope)),
+            mod.local.set(idxLocal, castTo("int", idxType, compileExpr(expr.index, scope))),
+            mod.if(
+              mod.i32.or(
+                mod.i32.lt_s(mod.local.get(idxLocal, binaryen.i32), mod.i32.const(0)),
+                mod.i32.ge_s(mod.local.get(idxLocal, binaryen.i32), len)
+              ),
+              mod.unreachable()
+            ),
+            at,
+          ],
+          binaryen.i32
+        );
+      }
+      case "MemberExpr": {
+        const objType = (expr.object as any).inferredType as YType;
+        if (objType === "string" && expr.property === "length") {
+          // The length is the u32 sitting in front of the bytes.
+          return mod.i32.load(0, 4, compileExpr(expr.object, scope));
+        }
         throw new Error("codegen: bare member expressions are not values (checker should have caught this)");
+      }
       case "UnaryExpr": {
         const t = (expr.argument as any).inferredType as YType;
         if (expr.operator === "!") {
@@ -628,6 +708,12 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
     // call site.
     if (lt === "string" || rt === "string") {
       ensureStringRuntime();
+      if (operator === "+" && (lt === "char" || rt === "char")) {
+        // One string, one char. The char goes on whichever end you wrote it.
+        return lt === "string"
+          ? mod.call("__yare_str_push_char", [l, r], binaryen.i32)
+          : mod.call("__yare_char_push_str", [l, r], binaryen.i32);
+      }
       switch (operator) {
         case "+":
           return mod.call("__yare_str_concat", [l, r], binaryen.i32);
@@ -805,6 +891,10 @@ function walk(node: N.Node, visit: (n: N.Node) => void): void {
       break;
     case "CastExpr":
       walk(node.expr, visit);
+      break;
+    case "IndexExpr":
+      walk(node.object, visit);
+      walk(node.index, visit);
       break;
     case "MemberExpr":
       walk(node.object, visit);

@@ -62,6 +62,9 @@ export function format(source: string, fileName = "<source>"): string {
     p.keepGapBefore(decl.line);
     if (decl.kind === "FunctionDecl") {
       p.printFunction(decl);
+    } else if (decl.kind === "DirectiveDecl") {
+      const args = decl.args.map((a) => JSON.stringify(a)).join(", ");
+      p.line(`@${decl.namespace}.${decl.action}(${args});`, decl.line);
     } else if (decl.kind === "ImportDecl") {
       p.line(`import { ${decl.names.join(", ")} } from ${JSON.stringify(decl.from)};`, decl.line);
     } else {
@@ -289,6 +292,8 @@ class Printer {
         return `${this.expr(e.target)} ${e.operator} ${this.expr(e.value)}`;
       case "CastExpr":
         return `${this.sub(e.expr, PREC_POSTFIX)} -> ${e.targetType.name}`;
+      case "IndexExpr":
+        return `${this.sub(e.object, PREC_POSTFIX)}[${this.expr(e.index)}]`;
     }
   }
 
@@ -310,6 +315,7 @@ function precOf(e: N.Expr): number {
     case "CallExpr":
     case "MemberExpr":
     case "CastExpr":
+    case "IndexExpr":
       return PREC_POSTFIX;
     default:
       return PREC_ATOM;

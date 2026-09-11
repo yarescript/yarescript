@@ -149,7 +149,9 @@ user-defined yarescript function or to a **host function** (see below).
 
 ## Strings
 
-`+` concatenates and `==` / `!=` compare by content, not by pointer:
+`+` concatenates, `==` / `!=` compare by content rather than by pointer, `s[i]`
+reads one `char` (bounds checked, so an out-of-range index traps instead of
+reading your neighbour's bytes), and `s.length` is the number of bytes:
 
 ```
 public function: void main() {
@@ -163,7 +165,8 @@ public function: void main() {
 Concatenation allocates from a bump allocator in linear memory, and the
 module grows its memory as needed. There is no garbage collector yet, so a
 program that builds strings in a long loop keeps every intermediate result
-alive. Ordering comparisons (`<`, `>` and friends) on strings are a compile
+alive. A `char` concatenates onto a string from either side, so `"a" + c` and `c + "a"`
+both work. Ordering comparisons (`<`, `>` and friends) on strings are a compile
 error for now.
 
 ## The standard surface: host functions
@@ -181,6 +184,35 @@ These are available without any import.
 This is intentional: the compiled `.wasm` never talks to the host through
 ad hoc JS glue code your program authored. It goes through a small,
 fixed set of well-known imports the loader always provides.
+
+## Standard library modules
+
+```
+@modules.import("str");
+```
+
+A directive is an instruction to the build rather than to the program, and it
+sits at the top level with the imports. The bundled modules are `str`, `math`,
+and `json`; the list is whatever is in the compiler's `stdlib/` directory.
+
+Once imported, a module's functions are called with the module name in front:
+
+```
+@modules.import("str");
+@modules.import("math");
+
+public function: void main() {
+    console.log(str.upper("yare"));   // YARE
+    console.log(str.reverse("abc"));  // cba
+    console.log(math.pow(2, 10));     // 1024
+    console.log(math.sqrt(144.0));    // 12
+}
+```
+
+Only the functions you actually call are linked into your module, and a call to
+one module function that calls another pulls the second one in too. Import a
+module and never use it and it costs you nothing. Unknown modules and unknown
+functions are reported with a suggestion.
 
 ## Modules & imports
 
@@ -213,6 +245,21 @@ public function: void test_square() {
 ```
 
 Test files do not need a `main`.
+
+## Errors
+
+Every "I have never heard of this" error comes with the closest thing the
+compiler has heard of, when there is one close enough to be worth mentioning:
+
+```
+error: Unknown function 'prntln'. Did you mean 'console.log'? (line 1)
+error: Unknown identifier 'totl'. Did you mean 'total'? (line 2)
+error: Unknown type 'integ'. Did you mean 'int'? (line 1)
+error: Module 'str' has no function 'uppr'. Did you mean 'upper'?
+```
+
+Names from other languages get a signpost too: `println`, `print`, and `log`
+all point at `console.log`, and `number` points at `double`.
 
 ## Formatting
 

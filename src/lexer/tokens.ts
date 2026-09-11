@@ -41,6 +41,8 @@ export enum TokenType {
   LBracket = "LBracket",
   RBracket = "RBracket",
   Arrow = "Arrow",
+  // @ starts a compiler directive, e.g. @modules.import("json")
+  At = "At",
 
   // operators
   Plus = "Plus",

@@ -186,6 +186,7 @@ export function tokenize(
       "<": TokenType.Lt,
       ">": TokenType.Gt,
       "!": TokenType.Not,
+      "@": TokenType.At,
     };
     if (oneCharMap[c]) {
       advance();

@@ -15,12 +15,12 @@
   <p>This page loads <span class="tag">kitchen-sink.wasm</span>, compiled straight from
      <span class="tag">src/main.ys</span> by the yarescript compiler. There is no JavaScript
      application logic anywhere, just the tiny loader you can see in
-     <span class="tag">.yarescript/loader.browser.js</span>.</p>
+     <span class="tag">.yare/loader.browser.js</span>.</p>
   <p>Build first from this directory: <span class="tag">node ../../dist/cli/index.js build</span>,
      then reload this page.</p>
   <div id="out">Loading...</div>
   <script type="module">
-    import { loadYarescriptModule } from "./.yarescript/loader.browser.js";
+    import { loadYarescriptModule } from "./.yare/loader.browser.js";
 
     const outEl = document.getElementById("out");
     const lines = [];

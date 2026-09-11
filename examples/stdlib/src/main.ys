@@ -1,0 +1,11 @@
+@modules.import("str");
+
+@modules.import("math");
+
+public function: void main() {
+    console.log(str.upper("yarescript"));
+    console.log(str.reverse("stressed"));
+    console.log(str.contains("yarescript", "scri"));
+    console.log(math.pow(2, 10));
+    console.log(math.sqrt(144.0));
+}

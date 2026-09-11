@@ -1,6 +1,7 @@
 import { parse } from "../parser/parser";
 import { check } from "../checker/checker";
 import { generateWasm } from "../codegen/codegen";
+import * as N from "../ast/nodes";
 
 /**
  * Runs a yarescript source string through the full pipeline and executes the
@@ -11,7 +12,13 @@ import { generateWasm } from "../codegen/codegen";
 export async function compileAndRun(
   source: string
 ): Promise<{ logs: string[]; exports: WebAssembly.Exports }> {
-  const program = parse(source, "<test>");
+  return runProgram(parse(source, "<test>"));
+}
+
+/** Same pipeline, but you hand it an AST. The linker needs that. */
+export async function runProgram(
+  program: N.Program
+): Promise<{ logs: string[]; exports: WebAssembly.Exports }> {
   const checked = check(program);
   const { wasmBinary, usedHostFunctions } = generateWasm(checked);
 

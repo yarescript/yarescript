@@ -57,6 +57,8 @@ export class Parser {
     while (!this.at(TokenType.EOF)) {
       if (this.at(TokenType.Import)) {
         body.push(this.parseImport());
+      } else if (this.at(TokenType.At)) {
+        body.push(this.parseDirective());
       } else if (
         this.at(TokenType.Public) ||
         this.at(TokenType.Private) ||
@@ -72,6 +74,37 @@ export class Parser {
       }
     }
     return { kind: "Program", body };
+  }
+
+  /** `@modules.import("json")` and friends. */
+  private parseDirective(): N.DirectiveDecl {
+    const at = this.expect(TokenType.At);
+    const namespace = this.expectDirectiveWord("Expected a directive name after '@'");
+    this.expect(TokenType.Dot, `Expected '.' in '@${namespace}.<action>'`);
+    const action = this.expectDirectiveWord(`Expected an action after '@${namespace}.'`);
+    this.expect(TokenType.LParen);
+    const args: string[] = [];
+    while (!this.at(TokenType.RParen)) {
+      args.push(this.expect(TokenType.StringLiteral, `Directive arguments must be strings`).value);
+      if (this.at(TokenType.Comma)) this.advance();
+    }
+    this.expect(TokenType.RParen);
+    this.expect(TokenType.Semicolon);
+    return { kind: "DirectiveDecl", namespace, action, args, line: at.line };
+  }
+
+  /**
+   * A word in a directive. `import` is a keyword everywhere else in the
+   * language, and `@modules.import` is exactly the directive that needs it,
+   * so keywords are welcome here.
+   */
+  private expectDirectiveWord(message: string): string {
+    const t = this.peek();
+    if (t.type === TokenType.Identifier || /^[a-z][a-zA-Z0-9]*$/.test(t.value)) {
+      this.advance();
+      return t.value;
+    }
+    throw new ParseError(`${message} (got '${t.value || t.type}')`, t.line, t.column);
   }
 
   private parseImport(): N.ImportDecl {
@@ -363,6 +396,11 @@ export class Parser {
         }
         this.expect(TokenType.RParen);
         expr = { kind: "CallExpr", callee: expr, args, line: t.line };
+      } else if (this.at(TokenType.LBracket)) {
+        const t = this.advance();
+        const index = this.parseExpr();
+        this.expect(TokenType.RBracket, "Expected ']' to close an index");
+        expr = { kind: "IndexExpr", object: expr, index, line: t.line };
       } else if (this.at(TokenType.Dot)) {
         const t = this.advance();
         const prop = this.expect(TokenType.Identifier).value;

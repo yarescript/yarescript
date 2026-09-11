@@ -1,0 +1,47 @@
+// The json module: building json, not walking it. Turning text back into a
+// value needs a value type that can hold "either a number or a list", and
+// yarescript does not have structs yet. See ROADMAP.md.
+
+public function: string ofInt(int n) {
+    if (n == 0) {
+        return "0";
+    }
+    let: bool negative = n < 0;
+    let: int v = n;
+    if (negative) {
+        v = 0 - n;
+    }
+    let: string out = "";
+    while (v > 0) {
+        out = ((48 + v % 10) -> char) + out;
+        v = v / 10;
+    }
+    if (negative) {
+        return "-" + out;
+    }
+    return out;
+}
+
+public function: string ofBool(bool b) {
+    if (b) {
+        return "true";
+    }
+    return "false";
+}
+
+public function: string quote(string s) {
+    let: string out = "";
+    for (let: int i = 0; i < s.length; i++) {
+        let: char c = s[i];
+        if (c == 34 -> char) {
+            out = out + 92 -> char + (34 -> char);
+        } else if (c == 92 -> char) {
+            out = out + 92 -> char + (92 -> char);
+        } else if (c == 10 -> char) {
+            out = out + 92 -> char + (110 -> char);
+        } else {
+            out = out + c;
+        }
+    }
+    return (34 -> char) + out + (34 -> char);
+}

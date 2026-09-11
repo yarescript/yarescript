@@ -1,5 +1,25 @@
 import * as N from "../ast/nodes";
-import { isAssignable, isNumeric, isValidType, widen, YType } from "./types";
+import { PRIMITIVES, isAssignable, isInteger, isNumeric, isValidType, widen, YType } from "./types";
+import { didYouMean, suggest } from "../diagnostics/suggest";
+
+/**
+ * Names people reach for when they arrive from another language. A fuzzy match
+ * cannot bridge "println" to "console.log", so the well-trodden paths get a
+ * signpost instead.
+ */
+const COMMON_ALIASES: Record<string, string> = {
+  println: "console.log",
+  print: "console.log",
+  printf: "console.log",
+  log: "console.log",
+  number: "double",
+  str: "string",
+  boolean: "bool",
+  int32: "int",
+  int64: "long",
+  float64: "double",
+  float32: "float",
+};
 
 export class TypeError_ extends Error {
   constructor(message: string, public line: number) {
@@ -75,6 +95,12 @@ class Scope {
   child(): Scope {
     return new Scope(this);
   }
+
+  /** Every name visible from here, outer scopes included. */
+  allNames(): string[] {
+    const own = [...this.vars.keys()];
+    return this.parent ? own.concat(this.parent.allNames()) : own;
+  }
 }
 
 export interface CheckedProgram {
@@ -99,11 +125,17 @@ export class Checker {
     for (const decl of program.body) {
       if (decl.kind === "FunctionDecl") {
         if (!isValidType(decl.returnType.name)) {
-          throw new TypeError_(`Unknown return type '${decl.returnType.name}'`, decl.line);
+          throw new TypeError_(
+            `Unknown return type '${decl.returnType.name}'.${this.typeHint(decl.returnType.name)}`,
+            decl.line
+          );
         }
         const params: YType[] = decl.params.map((p) => {
           if (!isValidType(p.paramType.name)) {
-            throw new TypeError_(`Unknown parameter type '${p.paramType.name}'`, decl.line);
+            throw new TypeError_(
+              `Unknown parameter type '${p.paramType.name}'.${this.typeHint(p.paramType.name)}`,
+              decl.line
+            );
           }
           return p.paramType.name as YType;
         });
@@ -160,7 +192,10 @@ export class Checker {
 
   private checkVarDecl(decl: N.VarDecl, scope: Scope) {
     if (!isValidType(decl.varType.name)) {
-      throw new TypeError_(`Unknown type '${decl.varType.name}'`, decl.line);
+      throw new TypeError_(
+        `Unknown type '${decl.varType.name}'.${this.typeHint(decl.varType.name)}`,
+        decl.line
+      );
     }
     const declType = decl.varType.name as YType;
     if (decl.init) {
@@ -278,12 +313,36 @@ export class Checker {
         return "bool";
       case "Identifier": {
         const v = scope.lookup(expr.name);
-        if (!v) throw new TypeError_(`Unknown identifier '${expr.name}'`, expr.line);
+        if (!v) {
+          throw new TypeError_(
+            `Unknown identifier '${expr.name}'.${didYouMean(expr.name, this.knownNames(scope))}`,
+            expr.line
+          );
+        }
         expr.inferredType = v.type;
         return v.type;
       }
+      case "IndexExpr": {
+        const objType = this.checkExpr(expr.object, scope);
+        const idxType = this.checkExpr(expr.index, scope);
+        if (objType !== "string") {
+          throw new TypeError_(
+            `Cannot index into a '${objType}'. Only strings can be indexed today.`,
+            expr.line
+          );
+        }
+        if (!isInteger(idxType)) {
+          throw new TypeError_(`A string index must be an integer, got '${idxType}'`, expr.line);
+        }
+        expr.inferredType = "char";
+        return "char";
+      }
       case "MemberExpr": {
-        // Only supported today as part of a qualified call like console.log(...)
+        const objType = this.checkExpr(expr.object, scope);
+        if (objType === "string" && expr.property === "length") {
+          expr.inferredType = "int";
+          return "int";
+        }
         throw new TypeError_(
           `'${this.stringifyMember(expr)}' is not a value. Did you mean to call it?`,
           expr.line
@@ -357,8 +416,12 @@ export class Checker {
         }
         // arithmetic: + - * / %
         if (expr.operator === "+" && (lt === "string" || rt === "string")) {
-          if (lt !== "string" || rt !== "string") {
-            throw new TypeError_(`Cannot mix 'string' with '${lt === "string" ? rt : lt}' in '+'`, expr.line);
+          const other = lt === "string" ? rt : lt;
+          if (other !== "string" && other !== "char") {
+            throw new TypeError_(
+              `Cannot mix 'string' with '${other}' in '+'. Turn it into text first with '-> char' or build it up from "".`,
+              expr.line
+            );
           }
           expr.inferredType = "string";
           return "string";
@@ -427,9 +490,34 @@ export class Checker {
           expr.inferredType = sig.returnType;
           return sig.returnType;
         }
-        throw new TypeError_(`Unknown function '${calleeName ?? "<expr>"}'`, expr.line);
+        throw new TypeError_(
+          `Unknown function '${calleeName ?? "<expr>"}'.${this.functionHint(calleeName, scope)}`,
+          expr.line
+        );
       }
     }
+  }
+
+  /** Everything a name could plausibly have been meant to be. */
+  private knownNames(scope: Scope): string[] {
+    return [...scope.allNames(), ...this.functions.keys(), ...Object.keys(HOST_FUNCTIONS)];
+  }
+
+  private typeHint(name: string): string {
+    const alias = COMMON_ALIASES[name.toLowerCase()];
+    if (alias) return ` Did you mean '${alias}'?`;
+    return didYouMean(name, PRIMITIVES);
+  }
+
+  private functionHint(name: string | null, scope: Scope): string {
+    if (!name) return "";
+    const alias = COMMON_ALIASES[name.toLowerCase()];
+    if (alias) return ` Did you mean '${alias}'?`;
+    // 'prntln' is one keystroke from 'println', which is itself a signpost to
+    // console.log, so a near miss on the alias still gets you there.
+    const nearAlias = suggest(name, Object.keys(COMMON_ALIASES));
+    if (nearAlias) return ` Did you mean '${COMMON_ALIASES[nearAlias]}'?`;
+    return didYouMean(name, [...this.functions.keys(), ...Object.keys(HOST_FUNCTIONS)]);
   }
 
   private calleeName(expr: N.Expr): string | null {

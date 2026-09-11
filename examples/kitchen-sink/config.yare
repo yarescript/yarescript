@@ -2,7 +2,7 @@
   "name": "kitchen-sink",
   "version": "0.1.0",
   "entry": "src/main.ys",
-  "outDir": ".yarescript",
+  "outDir": ".yare",
   "target": "wasm",
   "libs": {}
 }

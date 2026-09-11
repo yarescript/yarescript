@@ -1,0 +1,43 @@
+// The math module. No host imports, so all of this is your own WebAssembly.
+
+public function: int abs(int x) {
+    if (x < 0) {
+        return 0 - x;
+    }
+    return x;
+}
+
+public function: int min(int a, int b) {
+    if (a < b) {
+        return a;
+    }
+    return b;
+}
+
+public function: int max(int a, int b) {
+    if (a > b) {
+        return a;
+    }
+    return b;
+}
+
+public function: int pow(int base, int exponent) {
+    let: int result = 1;
+    for (let: int i = 0; i < exponent; i++) {
+        result = result * base;
+    }
+    return result;
+}
+
+public function: double sqrt(double x) {
+    if (x <= 0.0) {
+        return 0.0;
+    }
+    // Newton's method, because WebAssembly has a sqrt instruction and this
+    // file has no way to reach it yet. Twenty rounds is plenty for a double.
+    let: double guess = x;
+    for (let: int i = 0; i < 20; i++) {
+        guess = (guess + x / guess) / 2.0;
+    }
+    return guess;
+}

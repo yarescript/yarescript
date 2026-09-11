@@ -1,0 +1,71 @@
+// The str module. Text in, text out, no allocations you did not ask for
+// beyond the ones concatenation implies.
+
+public function: int length(string s) {
+    return s.length;
+}
+
+public function: string upper(string s) {
+    let: string out = "";
+    for (let: int i = 0; i < s.length; i++) {
+        let: int c = s[i] -> int;
+        if (c >= 97 && c <= 122) {
+            out = out + ((c - 32) -> char);
+        } else {
+            out = out + s[i];
+        }
+    }
+    return out;
+}
+
+public function: string lower(string s) {
+    let: string out = "";
+    for (let: int i = 0; i < s.length; i++) {
+        let: int c = s[i] -> int;
+        if (c >= 65 && c <= 90) {
+            out = out + ((c + 32) -> char);
+        } else {
+            out = out + s[i];
+        }
+    }
+    return out;
+}
+
+public function: string reverse(string s) {
+    let: string out = "";
+    for (let: int i = s.length - 1; i >= 0; i--) {
+        out = out + s[i];
+    }
+    return out;
+}
+
+public function: string repeat(string s, int times) {
+    let: string out = "";
+    for (let: int i = 0; i < times; i++) {
+        out = out + s;
+    }
+    return out;
+}
+
+public function: string slice(string s, int start, int end) {
+    let: string out = "";
+    for (let: int i = start; i < end && i < s.length; i++) {
+        out = out + s[i];
+    }
+    return out;
+}
+
+public function: bool contains(string s, string needle) {
+    if (needle.length == 0) {
+        return true;
+    }
+    if (needle.length > s.length) {
+        return false;
+    }
+    for (let: int i = 0; i <= s.length - needle.length; i++) {
+        if (slice(s, i, i + needle.length) == needle) {
+            return true;
+        }
+    }
+    return false;
+}

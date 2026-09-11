@@ -74,6 +74,12 @@ function cmdBuild(flags: Set<string>) {
     console.log(`Loader:   ${path.relative(root, result.loaderPath)}`);
     if (result.watPath) console.log(`WAT:      ${path.relative(root, result.watPath)}`);
     if (result.sourceFiles.length > 1) console.log(`Sources:  ${result.sourceFiles.length} files`);
+    for (const m of result.modules) {
+      console.log(
+        `Module:   ${m.name} ${m.version} (${m.linked.length} of ${m.available} functions linked)`
+      );
+    }
+    if (result.modules.length) console.log(`Lock:     ${path.relative(root, result.lockPath)}`);
     console.log(`Exports:  ${result.exportedFunctions.join(", ") || "(none)"}`);
   } catch (err) {
     reportCompileError(err);
