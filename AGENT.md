@@ -129,13 +129,13 @@ They are also the fastest way to find out a language feature is missing.
   `__yare_str_alloc`, `__yare_str_concat`, and `__yare_str_eq` into modules
   that use string operators, and the checker rejects user functions with that
   prefix.
-- **Thirteen types ride on four WebAssembly kinds.** The narrow ones (`i8`,
-  `i16`, `u8`, `u16`) live in an `i32` and are clamped by `normalize()` in
-  `src/codegen/codegen.ts` on every write, including `++` and `--`. The
-  unsigned ones share a kind with their signed twin and differ only in the
-  instruction `binOps()` picks: `div_u`, `lt_u`, and friends. Add a type in
-  `src/checker/types.ts` and those two functions are where it quietly breaks
-  if you forget them.
+- **Thirteen value types ride on four WebAssembly kinds**, and `void` rides on
+  none. The narrow ones (`i8`, `i16`, `u8`, `u16`) live in an `i32` and are
+  clamped by `normalize()` in `src/codegen/codegen.ts` on every write,
+  including `++` and `--`. The unsigned ones share a kind with their signed
+  twin and differ only in the instruction `binOps()` picks: `div_u`, `lt_u`,
+  and friends. Add a type in `src/checker/types.ts` and those two functions
+  are where it quietly breaks if you forget them.
 - **A bare number literal borrows the type beside it.** `Checker.adoptLiteral`
   is what lets `i + 2` typecheck on a `u8`, and `checkExprAs` is what lets
   `let: u8 m = 200;` typecheck at all, since `int` is not assignable to `u8`.

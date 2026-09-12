@@ -29,9 +29,10 @@ These used to be on this list and are now in the compiler, documented in
   object files. Import a module you never call and none of it is linked.
 - Error messages that suggest the name you were reaching for.
 - The whole numeric ladder. `i8`, `i16`, `u8`, `u16`, `u32`, and `u64` join
-  `char`, `int`, `long`, `float`, and `double`: thirteen types, with narrow
-  values wrapping the way their width says, unsigned values comparing
-  unsigned, and signed meeting unsigned only where you write a cast.
+  `char`, `int`, `long`, `float`, and `double`: fourteen types in all,
+  thirteen of which hold a value. Narrow values wrap the way their width says,
+  unsigned values compare unsigned, and signed meets unsigned only where you
+  write a cast.
 - Apache License 2.0.
 
 ## Near-term (language completeness)

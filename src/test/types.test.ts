@@ -5,7 +5,7 @@ import { parse } from "../parser/parser";
 import { check } from "../checker/checker";
 
 /**
- * The numeric ladder: eight integer widths, two floating point widths, and the
+ * The numeric ladder: nine integer types, two floating point types, and the
  * rules for moving values between them. Every case here prints a real value
  * out of a real WebAssembly module, because "it compiled" is not a result.
  */
