@@ -37,6 +37,11 @@ export type Node =
   | BreakStmt
   | ContinueStmt
   | ExprStmt
+  | SwitchStmt
+  | SwitchCase
+  | DoWhileStmt
+  | ForOfStmt
+  | ForInStmt
   | ImportDecl
   | DirectiveDecl
   | BinaryExpr
@@ -52,7 +57,49 @@ export type Node =
   | CastExpr
   | IndexExpr
   | ArrayLiteral
-  | NewArrayExpr;
+  | NewArrayExpr
+  | ConditionalExpr
+  | TemplateExpr
+  | NullLiteral
+  | TypeOfExpr;
+
+/** `a ? b : c`. Both arms are checked to a common type. */
+export interface ConditionalExpr {
+  kind: "ConditionalExpr";
+  test: Expr;
+  consequent: Expr;
+  alternate: Expr;
+  line: number;
+  inferredType?: string;
+}
+
+/**
+ * A backtick string. `parts` alternates between literal text and interpolated
+ * expressions, starting and ending with text, so an empty literal is `[""]`.
+ */
+export interface TemplateExpr {
+  kind: "TemplateExpr";
+  parts: (string | Expr)[];
+  line: number;
+  inferredType?: string;
+}
+
+/** `null`, which only ever lands in a reference: an array, a struct, a string. */
+export interface NullLiteral {
+  kind: "NullLiteral";
+  line: number;
+  inferredType?: string;
+}
+
+/** `typeof x`, which is the type as the compiler knows it, at compile time. */
+export interface TypeOfExpr {
+  kind: "TypeOfExpr";
+  argument: Expr;
+  line: number;
+  /** the type the checker found, which is what codegen prints */
+  argumentType?: string;
+  inferredType?: string;
+}
 
 export interface Program {
   kind: "Program";
@@ -110,7 +157,12 @@ export interface FunctionDecl {
 export interface VarDecl {
   kind: "VarDecl";
   isConst: boolean;
-  varType: TypeNode;
+  /**
+   * Null when you left it off, as in `let x = 5;`. The type checker works it
+   * out from the initializer and writes the answer back here, so everything
+   * downstream of checking sees a concrete type.
+   */
+  varType: TypeNode | null;
   name: string;
   init: Expr | null;
   line: number;
@@ -134,7 +186,11 @@ export type Stmt =
   | ReturnStmt
   | BreakStmt
   | ContinueStmt
-  | ExprStmt;
+  | ExprStmt
+  | SwitchStmt
+  | DoWhileStmt
+  | ForOfStmt
+  | ForInStmt;
 
 export interface IfStmt {
   kind: "IfStmt";
@@ -156,6 +212,56 @@ export interface ForStmt {
   init: VarDecl | ExprStmt | null;
   test: Expr | null;
   update: Expr | null;
+  body: Block;
+  line: number;
+}
+
+/** `switch (n) { case 1: ... default: ... }`. Cases fall through until `break`. */
+export interface SwitchStmt {
+  kind: "SwitchStmt";
+  discriminant: Expr;
+  cases: SwitchCase[];
+  line: number;
+  /** line of the closing brace, which is what the formatter measures from */
+  endLine: number;
+}
+
+export interface SwitchCase {
+  kind: "SwitchCase";
+  /** null on the `default:` case */
+  test: Expr | null;
+  consequent: Stmt[];
+  /** line of the `case` or `default` keyword itself */
+  line: number;
+}
+
+/** `do { ... } while (c);`, which runs the body once before asking. */
+export interface DoWhileStmt {
+  kind: "DoWhileStmt";
+  test: Expr;
+  body: Block;
+  line: number;
+  /** line the trailing semicolon sits on */
+  endLine: number;
+}
+
+/** `for (let: string s of xs)`, over an array or the chars of a string. */
+export interface ForOfStmt {
+  kind: "ForOfStmt";
+  /** null when the loop variable already exists */
+  itemType: TypeNode | null;
+  name: string;
+  iterable: Expr;
+  body: Block;
+  line: number;
+}
+
+/** `for (let: int i in xs)`, over the indices of an array or a string. */
+export interface ForInStmt {
+  kind: "ForInStmt";
+  indexType: TypeNode | null;
+  name: string;
+  iterable: Expr;
   body: Block;
   line: number;
 }
@@ -196,7 +302,11 @@ export type Expr =
   | CastExpr
   | IndexExpr
   | ArrayLiteral
-  | NewArrayExpr;
+  | NewArrayExpr
+  | ConditionalExpr
+  | TemplateExpr
+  | NullLiteral
+  | TypeOfExpr;
 
 export interface BinaryExpr {
   kind: "BinaryExpr";

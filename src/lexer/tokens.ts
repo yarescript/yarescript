@@ -26,6 +26,15 @@ export enum TokenType {
   False = "False",
   New = "New",
   Struct = "Struct",
+  Switch = "Switch",
+  Case = "Case",
+  Default = "Default",
+  Do = "Do",
+  Null = "Null",
+  TypeOf = "TypeOf",
+  // a backtick string, kept as the raw text between the backticks. The parser
+  // is what pulls ${...} out of it, because only a parser can nest properly.
+  Template = "Template",
 
   // types (kept as identifiers too, but reserved for clarity in the parser)
   TypeKeyword = "TypeKeyword",
@@ -67,6 +76,21 @@ export enum TokenType {
   Not = "Not",
   Increment = "Increment",
   Decrement = "Decrement",
+  PercentAssign = "PercentAssign",
+  Amp = "Amp",
+  Pipe = "Pipe",
+  Caret = "Caret",
+  Tilde = "Tilde",
+  Shl = "Shl",
+  Shr = "Shr",
+  AmpAssign = "AmpAssign",
+  PipeAssign = "PipeAssign",
+  CaretAssign = "CaretAssign",
+  ShlAssign = "ShlAssign",
+  ShrAssign = "ShrAssign",
+  EqEqEq = "EqEqEq",
+  NotEqEq = "NotEqEq",
+  Question = "Question",
 
   // comments. Only ever produced when the lexer is asked to keep them, which
   // today means one caller: `yare fmt`, who promises not to lose your notes.
@@ -104,6 +128,12 @@ export const KEYWORDS: Record<string, TokenType> = {
   false: TokenType.False,
   new: TokenType.New,
   struct: TokenType.Struct,
+  switch: TokenType.Switch,
+  case: TokenType.Case,
+  default: TokenType.Default,
+  do: TokenType.Do,
+  null: TokenType.Null,
+  typeof: TokenType.TypeOf,
 };
 
 // Primitive yarescript types. Kept separate from KEYWORDS so that identifiers

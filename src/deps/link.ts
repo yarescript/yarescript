@@ -193,7 +193,7 @@ function referencedStructs(dep: DepFile, selected: string[]): string[] {
     add(decl.returnType.name);
     decl.params.forEach((p) => add(p.paramType.name));
     walk(decl.body, (node) => {
-      if (node.kind === "VarDecl") add(node.varType.name);
+      if (node.kind === "VarDecl" && node.varType) add(node.varType.name);
       else if (node.kind === "CastExpr") add(node.targetType.name);
       else if (node.kind === "NewArrayExpr") add(node.elemType.name);
     });

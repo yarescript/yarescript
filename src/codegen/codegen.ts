@@ -143,6 +143,10 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   // in life.
   const HEAP_GLOBAL = "__yare_heap";
   let stringRuntimeInstalled = false;
+  // Declared up here rather than next to its function, because the compile
+  // loop below runs before the middle of this file is reached, and a `let`
+  // that has not run yet is a trap waiting for the first template string.
+  let textRuntimeAdded = false;
   let heapInstalled = false;
   let strCmpInstalled = false;
 
@@ -732,6 +736,318 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
     );
   }
 
+  /**
+   * A value as text, which is what a template string asks of everything you
+   * put inside ${...}.
+   */
+  function toText(t: YType, value: number): number {
+    ensureTextRuntime();
+    if (t === "string") return value;
+    if (t === "char") {
+      return mod.call("__yare_char_push_str", [value, mod.i32.const(internString(""))], binaryen.i32);
+    }
+    if (t === "bool") {
+      return mod.select(value, mod.i32.const(internString("true")), mod.i32.const(internString("false")));
+    }
+    if (t === "long" || t === "u64") {
+      return mod.call("__yare_itoa64", [value, mod.i32.const(t === "u64" ? 1 : 0)], binaryen.i32);
+    }
+    if (t === "float") return mod.call("__yare_ftoa", [mod.f64.promote(value)], binaryen.i32);
+    if (t === "double") return mod.call("__yare_ftoa", [value], binaryen.i32);
+    const unsigned = t === "u8" || t === "u16" || t === "u32" ? 1 : 0;
+    return mod.call("__yare_itoa", [normalize(t, value), mod.i32.const(unsigned)], binaryen.i32);
+  }
+
+  /** Decimal text for the three number shapes: int, long, and double. */
+  function ensureTextRuntime(): void {
+    if (textRuntimeAdded) return;
+    textRuntimeAdded = true;
+    ensureHeap();
+    ensureStringRuntime();
+
+    // __yare_itoa(value, unsigned) -> "1234" or "-1234"
+    mod.addFunction(
+      "__yare_itoa",
+      binaryen.createType([binaryen.i32, binaryen.i32]),
+      binaryen.i32,
+      // the two params are locals 0 and 1; these seven are 2..8
+      [binaryen.i32, binaryen.i32, binaryen.i32, binaryen.i32, binaryen.i32, binaryen.i32, binaryen.i32],
+      blk([
+        mod.local.set(
+          2,
+          mod.i32.and(mod.i32.eqz(mod.local.get(1, binaryen.i32)), mod.i32.lt_s(mod.local.get(0, binaryen.i32), mod.i32.const(0)))
+        ),
+        mod.local.set(
+          3,
+          mod.select(
+            mod.local.get(2, binaryen.i32),
+            mod.i32.sub(mod.i32.const(0), mod.local.get(0, binaryen.i32)),
+            mod.local.get(0, binaryen.i32)
+          )
+        ),
+        mod.local.set(4, mod.i32.const(1)),
+        mod.local.set(5, mod.local.get(3, binaryen.i32)),
+        mod.block("itoa_counted", [
+          mod.loop(
+            "itoa_count",
+            (mod.block as any)(null, [
+              mod.br("itoa_counted", mod.i32.lt_u(mod.local.get(5, binaryen.i32), mod.i32.const(10))),
+              mod.local.set(5, mod.i32.div_u(mod.local.get(5, binaryen.i32), mod.i32.const(10))),
+              mod.local.set(4, mod.i32.add(mod.local.get(4, binaryen.i32), mod.i32.const(1))),
+              mod.br("itoa_count"),
+            ])
+          ),
+        ]),
+        mod.local.set(
+          6,
+          mod.call(
+            "__yare_str_alloc",
+            [mod.i32.add(mod.local.get(4, binaryen.i32), mod.local.get(2, binaryen.i32))],
+            binaryen.i32
+          )
+        ),
+        mod.local.set(7, mod.i32.add(mod.local.get(4, binaryen.i32), mod.local.get(2, binaryen.i32))),
+        mod.local.set(5, mod.local.get(3, binaryen.i32)),
+        mod.loop(
+          "itoa_fill",
+          (mod.block as any)(null, [
+            mod.local.set(8, mod.i32.rem_u(mod.local.get(5, binaryen.i32), mod.i32.const(10))),
+            mod.i32.store8(
+              0,
+              1,
+              mod.i32.add(
+                mod.i32.add(mod.local.get(6, binaryen.i32), mod.i32.const(4)),
+                mod.i32.sub(mod.local.get(7, binaryen.i32), mod.i32.const(1))
+              ),
+              mod.i32.add(mod.i32.const(48), mod.local.get(8, binaryen.i32))
+            ),
+            mod.local.set(5, mod.i32.div_u(mod.local.get(5, binaryen.i32), mod.i32.const(10))),
+            mod.local.set(7, mod.i32.sub(mod.local.get(7, binaryen.i32), mod.i32.const(1))),
+            mod.br("itoa_fill", mod.i32.gt_u(mod.local.get(5, binaryen.i32), mod.i32.const(0))),
+          ])
+        ),
+        mod.if(
+          mod.local.get(2, binaryen.i32),
+          mod.i32.store8(0, 1, mod.i32.add(mod.local.get(6, binaryen.i32), mod.i32.const(4)), mod.i32.const(45))
+        ),
+        mod.return(mod.local.get(6, binaryen.i32)),
+      ])
+    );
+
+    // __yare_itoa64(value, unsigned) -> the same thing for longs
+    mod.addFunction(
+      "__yare_itoa64",
+      binaryen.createType([binaryen.i64, binaryen.i32]),
+      binaryen.i32,
+      // the params are locals 0 (i64) and 1 (i32); these are 2..8
+      [binaryen.i32, binaryen.i64, binaryen.i32, binaryen.i64, binaryen.i32, binaryen.i32, binaryen.i64],
+      blk([
+        mod.local.set(
+          2,
+          mod.i32.and(mod.i32.eqz(mod.local.get(1, binaryen.i32)), mod.i64.lt_s(mod.local.get(0, binaryen.i64), i64Const(0)))
+        ),
+        mod.local.set(
+          3,
+          mod.select(
+            mod.local.get(2, binaryen.i32),
+            mod.i64.sub(i64Const(0), mod.local.get(0, binaryen.i64)),
+            mod.local.get(0, binaryen.i64)
+          )
+        ),
+        mod.local.set(4, mod.i32.const(1)),
+        mod.local.set(5, mod.local.get(3, binaryen.i64)),
+        mod.block("ltoa_counted", [
+          mod.loop(
+            "ltoa_count",
+            (mod.block as any)(null, [
+              mod.br("ltoa_counted", mod.i64.lt_u(mod.local.get(5, binaryen.i64), i64Const(10))),
+              mod.local.set(5, mod.i64.div_u(mod.local.get(5, binaryen.i64), i64Const(10))),
+              mod.local.set(4, mod.i32.add(mod.local.get(4, binaryen.i32), mod.i32.const(1))),
+              mod.br("ltoa_count"),
+            ])
+          ),
+        ]),
+        mod.local.set(
+          6,
+          mod.call(
+            "__yare_str_alloc",
+            [mod.i32.add(mod.local.get(4, binaryen.i32), mod.local.get(2, binaryen.i32))],
+            binaryen.i32
+          )
+        ),
+        mod.local.set(7, mod.i32.add(mod.local.get(4, binaryen.i32), mod.local.get(2, binaryen.i32))),
+        mod.local.set(5, mod.local.get(3, binaryen.i64)),
+        mod.loop(
+          "ltoa_fill",
+          (mod.block as any)(null, [
+            mod.local.set(8, mod.i64.rem_u(mod.local.get(5, binaryen.i64), i64Const(10))),
+            mod.i32.store8(
+              0,
+              1,
+              mod.i32.add(
+                mod.i32.add(mod.local.get(6, binaryen.i32), mod.i32.const(4)),
+                mod.i32.sub(mod.local.get(7, binaryen.i32), mod.i32.const(1))
+              ),
+              mod.i32.add(mod.i32.const(48), mod.i32.wrap(mod.local.get(8, binaryen.i64)))
+            ),
+            mod.local.set(5, mod.i64.div_u(mod.local.get(5, binaryen.i64), i64Const(10))),
+            mod.local.set(7, mod.i32.sub(mod.local.get(7, binaryen.i32), mod.i32.const(1))),
+            mod.br("ltoa_fill", mod.i64.gt_u(mod.local.get(5, binaryen.i64), i64Const(0))),
+          ])
+        ),
+        mod.if(
+          mod.local.get(2, binaryen.i32),
+          mod.i32.store8(0, 1, mod.i32.add(mod.local.get(6, binaryen.i32), mod.i32.const(4)), mod.i32.const(45))
+        ),
+        mod.return(mod.local.get(6, binaryen.i32)),
+      ])
+    );
+
+    // __yare_ftoa(value) -> up to six decimal places, trailing zeroes dropped.
+    // Six is a choice, and it is written down here rather than discovered at
+    // 3am by somebody wondering where their precision went.
+    mod.addFunction(
+      "__yare_ftoa",
+      binaryen.createType([binaryen.f64]),
+      binaryen.i32,
+      // the parameter is local 0; these are 1..8
+      [binaryen.i32, binaryen.i64, binaryen.f64, binaryen.i32, binaryen.i32, binaryen.i32, binaryen.i32, binaryen.i32],
+      blk([
+        mod.local.set(1, mod.f64.lt(mod.local.get(0, binaryen.f64), mod.f64.const(0))),
+        mod.local.set(
+          0,
+          mod.select(
+            mod.local.get(1, binaryen.i32),
+            mod.f64.sub(mod.f64.const(0), mod.local.get(0, binaryen.f64)),
+            mod.local.get(0, binaryen.f64)
+          )
+        ),
+        mod.local.set(2, mod.i64.trunc_s.f64(mod.local.get(0, binaryen.f64))),
+        mod.local.set(8, mod.call("__yare_itoa64", [mod.local.get(2, binaryen.i64), mod.i32.const(0)], binaryen.i32)),
+        mod.local.set(
+          3,
+          mod.f64.sub(mod.local.get(0, binaryen.f64), mod.f64.convert_s.i64(mod.local.get(2, binaryen.i64)))
+        ),
+        mod.if(
+          mod.f64.eq(mod.local.get(3, binaryen.f64), mod.f64.const(0)),
+          mod.return(
+            mod.select(
+              mod.local.get(1, binaryen.i32),
+              mod.call(
+                "__yare_str_concat",
+                [mod.i32.const(internString("-")), mod.local.get(8, binaryen.i32)],
+                binaryen.i32
+              ),
+              mod.local.get(8, binaryen.i32)
+            )
+          )
+        ),
+        mod.local.set(4, mod.call("__yare_alloc", [mod.i32.const(16)], binaryen.i32)),
+        mod.local.set(5, mod.i32.const(0)),
+        mod.loop(
+          "ftoa_digits",
+          (mod.block as any)(null, [
+            mod.local.set(3, mod.f64.mul(mod.local.get(3, binaryen.f64), mod.f64.const(10))),
+            mod.local.set(6, mod.i32.trunc_s.f64(mod.local.get(3, binaryen.f64))),
+            mod.i32.store8(
+              0,
+              1,
+              mod.i32.add(mod.local.get(4, binaryen.i32), mod.local.get(5, binaryen.i32)),
+              mod.i32.add(mod.i32.const(48), mod.local.get(6, binaryen.i32))
+            ),
+            mod.local.set(
+              3,
+              mod.f64.sub(mod.local.get(3, binaryen.f64), mod.f64.convert_s.i32(mod.local.get(6, binaryen.i32)))
+            ),
+            mod.local.set(5, mod.i32.add(mod.local.get(5, binaryen.i32), mod.i32.const(1))),
+            mod.br("ftoa_digits", mod.i32.lt_s(mod.local.get(5, binaryen.i32), mod.i32.const(6))),
+          ])
+        ),
+        mod.local.set(7, mod.i32.const(6)),
+        mod.loop(
+          "ftoa_trim",
+          (mod.block as any)(null, [
+            // Walk back over the zeroes. The counter has to move, or this is
+            // a loop with an opinion and no exit.
+            mod.if(
+              mod.i32.and(
+                mod.i32.gt_s(mod.local.get(7, binaryen.i32), mod.i32.const(0)),
+                mod.i32.eq(
+                  mod.i32.load8_u(
+                    0,
+                    1,
+                    mod.i32.add(mod.local.get(4, binaryen.i32), mod.i32.sub(mod.local.get(7, binaryen.i32), mod.i32.const(1)))
+                  ),
+                  mod.i32.const(48)
+                )
+              ),
+              (mod.block as any)(null, [
+                mod.local.set(7, mod.i32.sub(mod.local.get(7, binaryen.i32), mod.i32.const(1))),
+                mod.br("ftoa_trim"),
+              ])
+            ),
+          ])
+        ),
+        // a fraction too small for six places is not worth a decimal point
+        mod.if(
+          mod.i32.eqz(mod.local.get(7, binaryen.i32)),
+          mod.return(
+            mod.select(
+              mod.local.get(1, binaryen.i32),
+              mod.call(
+                "__yare_str_concat",
+                [mod.i32.const(internString("-")), mod.local.get(8, binaryen.i32)],
+                binaryen.i32
+              ),
+              mod.local.get(8, binaryen.i32)
+            )
+          )
+        ),
+        mod.local.set(
+          8,
+          mod.call(
+            "__yare_str_concat",
+            [mod.local.get(8, binaryen.i32), mod.i32.const(internString("."))],
+            binaryen.i32
+          )
+        ),
+        mod.local.set(5, mod.i32.const(0)),
+        mod.loop(
+          "ftoa_emit",
+          (mod.block as any)(null, [
+            mod.local.set(
+              8,
+              // the char goes on the end: __yare_char_push_str would put it
+              // in front, which is a fine helper for the wrong job
+              mod.call(
+                "__yare_str_push_char",
+                [
+                  mod.local.get(8, binaryen.i32),
+                  mod.i32.load8_u(0, 1, mod.i32.add(mod.local.get(4, binaryen.i32), mod.local.get(5, binaryen.i32))),
+                ],
+                binaryen.i32
+              )
+            ),
+            mod.local.set(5, mod.i32.add(mod.local.get(5, binaryen.i32), mod.i32.const(1))),
+            mod.br("ftoa_emit", mod.i32.lt_s(mod.local.get(5, binaryen.i32), mod.local.get(7, binaryen.i32))),
+          ])
+        ),
+        mod.if(
+          mod.local.get(1, binaryen.i32),
+          mod.local.set(
+            8,
+            mod.call(
+              "__yare_str_concat",
+              [mod.i32.const(internString("-")), mod.local.get(8, binaryen.i32)],
+              binaryen.i32
+            )
+          )
+        ),
+        mod.return(mod.local.get(8, binaryen.i32)),
+      ])
+    );
+  }
+
   function compileBlock(block: N.Block, scope: FunctionScope): number {
     const child = scope.child();
     const stmts = block.body.map((s) => compileStmt(s, child));
@@ -741,7 +1057,11 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   function compileStmt(stmt: N.Stmt, scope: FunctionScope): number {
     switch (stmt.kind) {
       case "VarDecl": {
-        const type = N.typeSpelling(stmt.varType);
+        // An inferred declaration has its type written back by the checker, so
+        // this only falls back for a declaration with no value at all.
+        const type = stmt.varType
+          ? N.typeSpelling(stmt.varType)
+          : ((stmt.init as any)?.inferredType as YType) || "int";
         const index = scope.declareLocal(stmt.name, type);
         if (stmt.init) {
           // `let: long y = 2;` is legal yarescript, and an i32.const sitting in
@@ -814,6 +1134,141 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
           mod.br(loopLabel),
         ]);
         return mod.block(breakLabel, [initStmt, mod.loop(loopLabel, loopBody)]);
+      }
+      case "DoWhileStmt": {
+        const id = labelId++;
+        const breakLabel = `do_${id}_end`;
+        // `continue` skips to the test, which is the entire point of do..while
+        const continueLabel = `do_${id}_test`;
+        loopStack.push({ breakLabel, continueLabel });
+        const body = compileBlock(stmt.body, scope);
+        const test = compileExpr(stmt.test, scope);
+        loopStack.pop();
+        return mod.block(breakLabel, [
+          mod.loop(continueLabel, (mod.block as any)(null, [body, mod.br_if(continueLabel, test)])),
+        ]);
+      }
+      case "SwitchStmt": {
+        const id = labelId++;
+        const endLabel = `switch_${id}_end`;
+        const caseLabels = stmt.cases.map((_, i) => `switch_${id}_case_${i}`);
+        const dt = (stmt.discriminant as any).inferredType as YType;
+        const discLocal = scope.declareLocal(`__yare_switch_${id}`, dt);
+        const caseScope = scope.child();
+        // `break` leaves the switch, and a `continue` still belongs to
+        // whatever loop the switch is sitting inside.
+        const enclosing = loopStack[loopStack.length - 1];
+        loopStack.push({ breakLabel: endLabel, continueLabel: enclosing ? enclosing.continueLabel : endLabel });
+        const bodies = stmt.cases.map((c) => c.consequent.map((inner) => compileStmt(inner, caseScope)));
+        loopStack.pop();
+        const dispatchSteps: number[] = [];
+        let defaultIndex = -1;
+        stmt.cases.forEach((c, i) => {
+          if (!c.test) {
+            defaultIndex = i;
+            return;
+          }
+          const ct = (c.test as any).inferredType as YType;
+          dispatchSteps.push(
+            mod.br_if(
+              caseLabels[i],
+              compileBinary(
+                "==",
+                dt,
+                ct,
+                mod.local.get(discLocal, wasmType(dt)),
+                castTo(dt, ct, compileExpr(c.test, scope))
+              )
+            )
+          );
+        });
+        const dispatch = (mod.block as any)(null, [
+          ...dispatchSteps,
+          mod.br(defaultIndex >= 0 ? caseLabels[defaultIndex] : endLabel),
+        ]);
+        // Cases fall through, so each body sits *after* the block that jumps
+        // to it and before the next one. Nesting them inside out is what makes
+        // `br case_i` land on the first statement of case i.
+        let inner: number = mod.block(caseLabels[0], [dispatch]);
+        let seq: number[] = [inner, ...bodies[0]];
+        for (let i = 1; i < stmt.cases.length; i++) {
+          inner = mod.block(caseLabels[i], seq);
+          seq = [inner, ...bodies[i]];
+        }
+        return mod.block(endLabel, [
+          mod.local.set(discLocal, castTo(dt, dt, compileExpr(stmt.discriminant, scope))),
+          ...seq,
+        ]);
+      }
+      case "ForOfStmt": {
+        const forScope = scope.child();
+        const srcType = (stmt.iterable as any).inferredType as YType;
+        const isText = srcType === "string";
+        const elem: YType = isText ? "char" : elemTypeOf(srcType);
+        const size = sizeOfType(elem);
+        const header = arrayHeader(elem);
+        const ptrLocal = forScope.declareLocal(`__yare_of_ptr_${labelId++}`, "int");
+        const lenLocal = forScope.declareLocal(`__yare_of_len_${labelId++}`, "int");
+        const idxLocal = forScope.declareLocal(`__yare_of_i_${labelId++}`, "int");
+        const itemLocal = forScope.declareLocal(stmt.name, elem);
+        const ptr = () => mod.local.get(ptrLocal, binaryen.i32);
+        const idx = () => mod.local.get(idxLocal, binaryen.i32);
+        const readElem = isText
+          ? mod.i32.load8_u(0, 1, mod.i32.add(mod.i32.add(ptr(), mod.i32.const(4)), idx()))
+          : loadAt(elem, mod.i32.add(mod.i32.add(ptr(), mod.i32.const(header)), mod.i32.mul(idx(), mod.i32.const(size))));
+        const id = labelId++;
+        const breakLabel = `forof_${id}_end`;
+        const continueLabel = `forof_${id}_continue`;
+        const loopLabel = `forof_${id}_loop`;
+        loopStack.push({ breakLabel, continueLabel });
+        const body = compileBlock(stmt.body, forScope);
+        loopStack.pop();
+        const loopBody = (mod.block as any)(null, [
+          mod.if(
+            mod.i32.ge_s(idx(), mod.local.get(lenLocal, binaryen.i32)),
+            mod.br(breakLabel)
+          ),
+          mod.local.set(itemLocal, castTo(elem, elem, readElem)),
+          mod.block(continueLabel, [body]),
+          mod.local.set(idxLocal, mod.i32.add(idx(), mod.i32.const(1))),
+          mod.br(loopLabel),
+        ]);
+        return mod.block(breakLabel, [
+          mod.local.set(ptrLocal, compileExpr(stmt.iterable, scope)),
+          mod.local.set(lenLocal, mod.i32.load(0, 4, ptr())),
+          mod.local.set(idxLocal, mod.i32.const(0)),
+          mod.loop(loopLabel, loopBody),
+        ]);
+      }
+      case "ForInStmt": {
+        const forScope = scope.child();
+        const srcType = (stmt.iterable as any).inferredType as YType;
+        const idxType = stmt.indexType ? N.typeSpelling(stmt.indexType) : "int";
+        const ptrLocal = forScope.declareLocal(`__yare_in_ptr_${labelId++}`, "int");
+        const lenLocal = forScope.declareLocal(`__yare_in_len_${labelId++}`, "int");
+        const idxLocal = forScope.declareLocal(stmt.name, idxType);
+        const id = labelId++;
+        const breakLabel = `forin_${id}_end`;
+        const continueLabel = `forin_${id}_continue`;
+        const loopLabel = `forin_${id}_loop`;
+        loopStack.push({ breakLabel, continueLabel });
+        const body = compileBlock(stmt.body, forScope);
+        loopStack.pop();
+        const loopBody = (mod.block as any)(null, [
+          mod.if(
+            mod.i32.ge_s(castTo("int", idxType, mod.local.get(idxLocal, wasmType(idxType))), mod.local.get(lenLocal, binaryen.i32)),
+            mod.br(breakLabel)
+          ),
+          mod.block(continueLabel, [body]),
+          mod.local.set(idxLocal, arith(idxType, "add", mod.local.get(idxLocal, wasmType(idxType)), one_(idxType))),
+          mod.br(loopLabel),
+        ]);
+        return mod.block(breakLabel, [
+          mod.local.set(ptrLocal, compileExpr(stmt.iterable, scope)),
+          mod.local.set(lenLocal, mod.i32.load(0, 4, mod.local.get(ptrLocal, binaryen.i32))),
+          mod.local.set(idxLocal, arith(idxType, "sub", zero(idxType), zero(idxType))),
+          mod.loop(loopLabel, loopBody),
+        ]);
       }
       case "BreakStmt": {
         const ctx = loopStack[loopStack.length - 1];
@@ -892,6 +1347,47 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
           ],
           binaryen.i32
         );
+      }
+      case "NullLiteral":
+        // A null reference is a pointer to nowhere, which is 0.
+        return mod.i32.const(0);
+      case "TypeOfExpr":
+        // Answered here rather than at runtime: by now the type is a fact.
+        return mod.i32.const(internString(expr.argumentType || "unknown"));
+      case "ConditionalExpr": {
+        const t = expr.inferredType as YType;
+        const ct = (expr.consequent as any).inferredType as YType;
+        const at = (expr.alternate as any).inferredType as YType;
+        // A real branch rather than a select, so the arm that was not taken is
+        // not evaluated. `x == null ? "none" : x.name` depends on that.
+        const outLocal = scope.declareLocal(`__yare_tern_${labelId++}`, t);
+        return blk(
+          [
+            mod.if(
+              compileExpr(expr.test, scope),
+              mod.local.set(outLocal, castTo(t, ct, compileExpr(expr.consequent, scope))),
+              mod.local.set(outLocal, castTo(t, at, compileExpr(expr.alternate, scope)))
+            ),
+            mod.local.get(outLocal, wasmType(t)),
+          ],
+          wasmType(t)
+        );
+      }
+      case "TemplateExpr": {
+        // `a${b}c` is a chain of concatenations, which is what it would have
+        // been if you had written it out longhand.
+        ensureTextRuntime();
+        let out = mod.i32.const(internString(""));
+        for (const part of expr.parts) {
+          if (typeof part === "string") {
+            if (part.length === 0) continue;
+            out = mod.call("__yare_str_concat", [out, mod.i32.const(internString(part))], binaryen.i32);
+            continue;
+          }
+          const t = (part as any).inferredType as YType;
+          out = mod.call("__yare_str_concat", [out, toText(t, compileExpr(part, scope))], binaryen.i32);
+        }
+        return out;
       }
       case "ArrayLiteral": {
         ensureHeap();
@@ -978,6 +1474,12 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
           const val = compileExpr(expr.argument, scope);
           return arith(t, "sub", zero(t), val);
         }
+        if (expr.operator === "~") {
+          // every bit flipped, which is a xor with all of them set
+          const val = compileExpr(expr.argument, scope);
+          const bin = binOps(t);
+          return normalize(t, bin.xor(val, t === "long" || t === "u64" ? i64Const(-1) : mod.i32.const(-1)));
+        }
         if (expr.operator === "++" || expr.operator === "--") {
           if (expr.argument.kind === "IndexExpr" || expr.argument.kind === "MemberExpr") {
             // `xs[i]++` and `p.x++`: read the slot, nudge it, put it back.
@@ -1062,12 +1564,15 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
         }
         const info = scope.lookup(expr.target.name);
         let value = compileExpr(expr.value, scope);
+        let valueType = (expr.value as any).inferredType as YType;
         if (expr.operator !== "=") {
           const op = expr.operator.replace("=", "");
           const current = mod.local.get(info.index, wasmType(info.type));
-          value = compileBinary(op, info.type, (expr.value as any).inferredType, current, value);
+          value = compileBinary(op, info.type, valueType, current, value);
+          // The answer of `long <<= int` is a long, whatever the right-hand
+          // side started out as, and the cast below has to know that.
+          valueType = info.type;
         }
-        const valueType = (expr.value as any).inferredType as YType;
         const setInstr = mod.local.set(info.index, castTo(info.type, valueType, value));
         return (mod.block as any)(null, [setInstr, mod.local.get(info.index, wasmType(info.type))], wasmType(info.type));
       }
@@ -1132,6 +1637,10 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
     // String operators go through the runtime helpers, because two pointers
     // and a length prefix are not something you want to open-code at every
     // call site.
+    // `===` and `!==` are the same comparison with a longer spelling; nothing
+    // in yarescript coerces, so there is no second meaning to give them.
+    if (operator === "===") operator = "==";
+    if (operator === "!==") operator = "!=";
     if (lt === "string" || rt === "string") {
       ensureStringRuntime();
       if (operator === "+" && (lt === "char" || rt === "char")) {
@@ -1155,6 +1664,14 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
         default:
           throw new Error(`codegen: '${operator}' is not defined for string`);
       }
+    }
+    // Two references compare as the pointers they are, which is the only
+    // question worth asking about them: same record, or not.
+    const isRef = (t: YType) => isArrayType(t) || checked.structs.has(t) || t === "null";
+    if (isRef(lt) || isRef(rt)) {
+      if (operator === "==") return mod.i32.eq(l, r);
+      if (operator === "!=") return mod.i32.ne(l, r);
+      throw new Error(`codegen: '${operator}' does not work on a reference`);
     }
     // The checker picked the result type by widening; codegen has to actually
     // perform that widening on the operands, or we hand WebAssembly an
@@ -1187,6 +1704,16 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
         return bin.le(lv, rv);
       case ">=":
         return bin.ge(lv, rv);
+      case "&":
+        return bin.and(lv, rv);
+      case "|":
+        return bin.or(lv, rv);
+      case "^":
+        return bin.xor(lv, rv);
+      case "<<":
+        return bin.shl(lv, rv);
+      case ">>":
+        return bin.shr(lv, rv);
       case "&&":
         // Short circuit, the way every language you have used does it. `i <
         // s.length && s[i] == x` is the idiom that guards an index, and an
@@ -1220,6 +1747,11 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
         gt: mod.i32.gt_u,
         le: mod.i32.le_u,
         ge: mod.i32.ge_u,
+        and: mod.i32.and,
+        or: mod.i32.or,
+        xor: mod.i32.xor,
+        shl: mod.i32.shl,
+        shr: mod.i32.shr_u,
       };
     }
     if (t === "u64") {
@@ -1235,6 +1767,11 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
         gt: mod.i64.gt_u,
         le: mod.i64.le_u,
         ge: mod.i64.ge_u,
+        and: mod.i64.and,
+        or: mod.i64.or,
+        xor: mod.i64.xor,
+        shl: mod.i64.shl,
+        shr: mod.i64.shr_u,
       };
     }
     if (t === "i8" || t === "i16" || t === "int" || t === "bool" || t === "char") {
@@ -1250,6 +1787,11 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
         gt: mod.i32.gt_s,
         le: mod.i32.le_s,
         ge: mod.i32.ge_s,
+        and: mod.i32.and,
+        or: mod.i32.or,
+        xor: mod.i32.xor,
+        shl: mod.i32.shl,
+        shr: mod.i32.shr_s,
       };
     }
     if (t === "long") {
@@ -1265,6 +1807,11 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
         gt: mod.i64.gt_s,
         le: mod.i64.le_s,
         ge: mod.i64.ge_s,
+        and: mod.i64.and,
+        or: mod.i64.or,
+        xor: mod.i64.xor,
+        shl: mod.i64.shl,
+        shr: mod.i64.shr_s,
       };
     }
     if (t === "float") {
@@ -1282,6 +1829,7 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
         gt: mod.f32.gt,
         le: mod.f32.le,
         ge: mod.f32.ge,
+        ...noBits("float"),
       } as any;
     }
     // double
@@ -1299,8 +1847,17 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
       gt: mod.f64.gt,
       le: mod.f64.le,
       ge: mod.f64.ge,
+      ...noBits("double"),
     } as any;
   }
+}
+
+/** The bitwise operators, for the two types that have no bits to move. */
+function noBits(t: string) {
+  const refuse = () => {
+    throw new Error(`codegen: bitwise operators are not defined for ${t}. Cast to an int first.`);
+  };
+  return { and: refuse, or: refuse, xor: refuse, shl: refuse, shr: refuse };
 }
 
 let labelId = 0;
@@ -1340,6 +1897,35 @@ function walk(node: N.Node, visit: (n: N.Node) => void): void {
       break;
     case "ExprStmt":
       walk(node.expression, visit);
+      break;
+    case "SwitchStmt":
+      walk(node.discriminant, visit);
+      node.cases.forEach((c) => {
+        if (c.test) walk(c.test, visit);
+        c.consequent.forEach((inner) => walk(inner, visit));
+      });
+      break;
+    case "DoWhileStmt":
+      walk(node.test, visit);
+      walk(node.body, visit);
+      break;
+    case "ForOfStmt":
+    case "ForInStmt":
+      walk(node.iterable, visit);
+      walk(node.body, visit);
+      break;
+    case "ConditionalExpr":
+      walk(node.test, visit);
+      walk(node.consequent, visit);
+      walk(node.alternate, visit);
+      break;
+    case "TypeOfExpr":
+      walk(node.argument, visit);
+      break;
+    case "TemplateExpr":
+      node.parts.forEach((part) => {
+        if (typeof part !== "string") walk(part, visit);
+      });
       break;
     case "BinaryExpr":
       walk(node.left, visit);

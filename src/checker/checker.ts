@@ -310,6 +310,18 @@ export class Checker {
       expr.inferredType = target;
       return target;
     }
+    // `null` has no type of its own either. It takes the one it is handed, and
+    // only a reference can hold it: an array, a struct, or a string.
+    if (expr.kind === "NullLiteral") {
+      if (target !== "string" && !isArrayType(target) && !this.structs.has(target)) {
+        throw new TypeError_(
+          `'null' only fits an array, a struct, or a string, not '${target}'`,
+          expr.line
+        );
+      }
+      expr.inferredType = target;
+      return target;
+    }
     const t = this.checkExpr(expr, scope);
     if (isAssignable(t, target)) return t;
     const range = INT_RANGE[target as ScalarType];
@@ -353,7 +365,28 @@ export class Checker {
   }
 
   private checkVarDecl(decl: N.VarDecl, scope: Scope) {
-    const declType = this.resolveType(decl.varType, decl.line);
+    let declType: YType;
+    if (decl.varType) {
+      declType = this.resolveType(decl.varType, decl.line);
+    } else {
+      // `let x = 5;`. The value says what it is, and the answer is written
+      // back into the node so codegen, the linker, and `yare fmt` all see a
+      // concrete type rather than a question mark.
+      if (!decl.init) {
+        throw new TypeError_(
+          `'${decl.name}' has no type and no value to work one out from`,
+          decl.line
+        );
+      }
+      declType = this.checkExpr(decl.init, scope);
+      if (declType === "null") {
+        throw new TypeError_(
+          `Cannot work out a type for '${decl.name}' from null on its own. Say what it is.`,
+          decl.line
+        );
+      }
+      decl.varType = typeNodeOf(declType, decl.line);
+    }
     if (decl.init) {
       const initType = this.checkExprAs(decl.init, scope, declType);
       if (!isAssignable(initType, declType)) {
@@ -435,6 +468,89 @@ export class Checker {
           if (t !== "bool") throw new TypeError_(`'for' condition must be bool, got '${t}'`, stmt.line);
         }
         if (stmt.update) this.checkExpr(stmt.update, forScope);
+        this.checkBlock(stmt.body, forScope, expectedReturn);
+        return false;
+      }
+      case "DoWhileStmt": {
+        const t = this.checkExpr(stmt.test, scope);
+        if (t !== "bool") throw new TypeError_(`'do..while' condition must be bool, got '${t}'`, stmt.line);
+        this.checkBlock(stmt.body, scope, expectedReturn);
+        const spins = stmt.test.kind === "BoolLiteral" && stmt.test.value === true;
+        return spins && !this.breaksOut(stmt.body.body);
+      }
+      case "SwitchStmt": {
+        const dt = this.checkExpr(stmt.discriminant, scope);
+        if (!isInteger(dt) && dt !== "string" && dt !== "bool") {
+          throw new TypeError_(
+            `'switch' takes an integer, a char, a string, or a bool, got '${dt}'`,
+            stmt.line
+          );
+        }
+        let sawDefault = false;
+        for (const c of stmt.cases) {
+          if (!c.test) {
+            sawDefault = true;
+            continue;
+          }
+          const ct = this.checkExprAs(c.test, scope, dt);
+          if (ct !== dt && !isAssignable(ct, dt)) {
+            throw new TypeError_(`A '${ct}' case can never match a '${dt}'`, c.line);
+          }
+        }
+        // Cases share one scope and fall through until a `break`, which is the
+        // behaviour you get in every other language that has a switch.
+        const caseScope = scope.child();
+        let everyPathReturns = sawDefault;
+        for (const c of stmt.cases) {
+          let bodyReturns = c.consequent.length > 0;
+          for (const inner of c.consequent) {
+            if (!this.checkStmt(inner, caseScope, expectedReturn)) bodyReturns = false;
+          }
+          if (!bodyReturns) everyPathReturns = false;
+        }
+        return everyPathReturns;
+      }
+      case "ForOfStmt": {
+        const forScope = scope.child();
+        // `for (let: int x of [1, 2, 3])` gives the literal its element type,
+        // which is the only way a bare literal in that spot could ever work.
+        const it = stmt.itemType
+          ? this.checkExprAs(stmt.iterable, forScope, arrayOf(this.resolveType(stmt.itemType, stmt.line)))
+          : this.checkExpr(stmt.iterable, forScope);
+        let itemType: YType;
+        if (it === "string") itemType = "char";
+        else if (isArrayType(it)) itemType = elemTypeOf(it);
+        else {
+          throw new TypeError_(`'for..of' walks arrays and strings, not '${it}'`, stmt.line);
+        }
+        if (stmt.itemType) {
+          const declared = this.resolveType(stmt.itemType, stmt.line);
+          if (!isAssignable(itemType, declared)) {
+            throw new TypeError_(
+              `Cannot put '${itemType}' elements into a '${declared}' loop variable`,
+              stmt.line
+            );
+          }
+          itemType = declared;
+        }
+        forScope.declare(stmt.name, itemType, false, stmt.line);
+        this.checkBlock(stmt.body, forScope, expectedReturn);
+        return false;
+      }
+      case "ForInStmt": {
+        const forScope = scope.child();
+        const it = this.checkExpr(stmt.iterable, forScope);
+        if (it !== "string" && !isArrayType(it)) {
+          throw new TypeError_(`'for..in' counts the slots of arrays and strings, not '${it}'`, stmt.line);
+        }
+        let indexType: YType = "int";
+        if (stmt.indexType) {
+          indexType = this.resolveType(stmt.indexType, stmt.line);
+          if (!isInteger(indexType)) {
+            throw new TypeError_(`A 'for..in' index has to be an integer, got '${indexType}'`, stmt.line);
+          }
+        }
+        forScope.declare(stmt.name, indexType, false, stmt.line);
         this.checkBlock(stmt.body, forScope, expectedReturn);
         return false;
       }
@@ -545,6 +661,13 @@ export class Checker {
           expr.inferredType = "bool";
           return "bool";
         }
+        if (expr.operator === "~") {
+          if (!isInteger(t)) {
+            throw new TypeError_(`'~' flips the bits of an integer, and '${t}' has none`, expr.line);
+          }
+          expr.inferredType = t;
+          return t;
+        }
         if (!isNumeric(t)) throw new TypeError_(`'${expr.operator}' requires a numeric type, got '${t}'`, expr.line);
         expr.inferredType = t;
         return t;
@@ -582,14 +705,28 @@ export class Checker {
         return target;
       }
       case "BinaryExpr": {
-        let lt = this.checkExpr(expr.left, scope);
-        let rt = this.checkExpr(expr.right, scope);
+        // `x == null` is how you ask whether a reference is empty, and the
+        // null on one side takes its type from the thing on the other.
+        let lt: YType;
+        let rt: YType;
+        if (expr.left.kind === "NullLiteral" && expr.right.kind !== "NullLiteral") {
+          rt = this.checkExpr(expr.right, scope);
+          lt = this.checkExprAs(expr.left, scope, rt);
+        } else if (expr.right.kind === "NullLiteral" && expr.left.kind !== "NullLiteral") {
+          lt = this.checkExpr(expr.left, scope);
+          rt = this.checkExprAs(expr.right, scope, lt);
+        } else {
+          lt = this.checkExpr(expr.left, scope);
+          rt = this.checkExpr(expr.right, scope);
+        }
         // a bare number takes the type of whatever it is standing next to
         const adoptedLeft = this.adoptLiteral(expr.left, rt);
         if (adoptedLeft) lt = adoptedLeft;
         const adoptedRight = this.adoptLiteral(expr.right, lt);
         if (adoptedRight) rt = adoptedRight;
-        const comparisons = new Set(["==", "!=", "<", ">", "<=", ">="]);
+        // `===` and `!==` are spelled the way you are used to and mean the
+        // same thing as `==` here, because nothing in yarescript coerces.
+        const comparisons = new Set(["==", "!=", "===", "!==", "<", ">", "<=", ">="]);
         const logical = new Set(["&&", "||"]);
         if (logical.has(expr.operator)) {
           if (lt !== "bool" || rt !== "bool") {
@@ -604,6 +741,16 @@ export class Checker {
             // It is not a collation, and it does not pretend to be one.
             expr.inferredType = "bool";
             return "bool";
+          } else if (
+            lt === "null" ||
+            rt === "null" ||
+            expr.left.kind === "NullLiteral" ||
+            expr.right.kind === "NullLiteral"
+          ) {
+            // The one comparison a reference gets: is it null or not.
+            if (!["==", "!=", "===", "!=="].includes(expr.operator)) {
+              throw new TypeError_(`Only '==' and '!=' work on 'null'`, expr.line);
+            }
           } else if (isArrayType(lt) || isArrayType(rt) || this.structs.has(lt) || this.structs.has(rt)) {
             throw new TypeError_(
               `Cannot compare '${lt}' and '${rt}' with '${expr.operator}'. Two arrays with the same contents are still two arrays; compare them element by element.`,
@@ -612,7 +759,7 @@ export class Checker {
           } else if (isNumeric(lt) && isNumeric(rt)) {
             // fine
           } else if (lt === "bool" && rt === "bool") {
-            if (expr.operator !== "==" && expr.operator !== "!=") {
+            if (!["==", "!=", "===", "!=="].includes(expr.operator)) {
               throw new TypeError_(`Only '==' and '!=' work on bools`, expr.line);
             }
           } else {
@@ -620,6 +767,18 @@ export class Checker {
           }
           expr.inferredType = "bool";
           return "bool";
+        }
+        const bitwise = new Set(["&", "|", "^", "<<", ">>"]);
+        if (bitwise.has(expr.operator)) {
+          if (!isInteger(lt) || !isInteger(rt)) {
+            throw new TypeError_(
+              `'${expr.operator}' needs integers, got '${lt}' and '${rt}'. If you meant a float, there are no bits to move.`,
+              expr.line
+            );
+          }
+          const unified = lt === rt ? lt : tryWiden(lt, rt) || "int";
+          expr.inferredType = unified;
+          return unified;
         }
         // arithmetic: + - * / %
         if (expr.operator === "+" && (lt === "string" || rt === "string")) {
@@ -654,8 +813,27 @@ export class Checker {
       }
       case "AssignExpr": {
         const targetType = this.checkLvalue(expr.target, scope, expr.line);
+        // `s += "x"` is how everybody builds a string, so it works.
+        if (expr.operator === "+=" && targetType === "string") {
+          const valueType = this.checkExpr(expr.value, scope);
+          if (valueType !== "string" && valueType !== "char") {
+            throw new TypeError_(
+              `Cannot add '${valueType}' onto a string with '+='. Make it text first.`,
+              expr.line
+            );
+          }
+          expr.inferredType = targetType;
+          return targetType;
+        }
         if (expr.operator !== "=" && !isNumeric(targetType)) {
           throw new TypeError_(`'${expr.operator}' requires a numeric target, got '${targetType}'`, expr.line);
+        }
+        const bitwiseAssign = new Set(["&=", "|=", "^=", "<<=", ">>=", "%="]);
+        if (bitwiseAssign.has(expr.operator) && !isInteger(targetType)) {
+          throw new TypeError_(
+            `'${expr.operator}' needs an integer target, got '${targetType}'`,
+            expr.line
+          );
         }
         const valueType = this.checkExprAs(expr.value, scope, targetType);
         if (!isAssignable(valueType, targetType)) {
@@ -666,6 +844,54 @@ export class Checker {
         }
         expr.inferredType = targetType;
         return targetType;
+      }
+      case "NullLiteral":
+        // On its own a bare null has no type. `checkExprAs` gives it one when
+        // there is somewhere to put it; getting here means there was not.
+        throw new TypeError_(
+          `A bare 'null' has no type. Say what it is: let: string s = null;`,
+          expr.line
+        );
+      case "TypeOfExpr": {
+        // Answered at compile time, because the type is a fact by then.
+        const t = this.checkExpr(expr.argument, scope);
+        expr.argumentType = t;
+        expr.inferredType = "string";
+        return "string";
+      }
+      case "TemplateExpr": {
+        for (const part of expr.parts) {
+          if (typeof part === "string") continue;
+          const t = this.checkExpr(part, scope);
+          if (t === "string" || t === "char" || t === "bool" || isNumeric(t)) continue;
+          throw new TypeError_(
+            `A template string can hold text, chars, numbers, and bools, not '${t}'`,
+            expr.line
+          );
+        }
+        expr.inferredType = "string";
+        return "string";
+      }
+      case "ConditionalExpr": {
+        const tt = this.checkExpr(expr.test, scope);
+        if (tt !== "bool") {
+          throw new TypeError_(`A ternary condition must be bool, got '${tt}'`, expr.line);
+        }
+        let ct = this.checkExpr(expr.consequent, scope);
+        let at = this.checkExpr(expr.alternate, scope);
+        const adoptedConsequent = this.adoptLiteral(expr.consequent, at);
+        if (adoptedConsequent) ct = adoptedConsequent;
+        const adoptedAlternate = this.adoptLiteral(expr.alternate, ct);
+        if (adoptedAlternate) at = adoptedAlternate;
+        const unified = ct === at ? ct : tryWiden(ct, at);
+        if (!unified) {
+          throw new TypeError_(
+            `The two arms of a ternary have to agree, got '${ct}' and '${at}'`,
+            expr.line
+          );
+        }
+        expr.inferredType = unified;
+        return unified;
       }
       case "ArrayLiteral":
         // Reached only when nothing told the literal what to be.
@@ -764,6 +990,9 @@ export class Checker {
   private breaksOut(stmts: N.Stmt[]): boolean {
     for (const stmt of stmts) {
       if (stmt.kind === "BreakStmt") return true;
+      // A `break` inside a switch belongs to the switch, so a switch never
+      // counts as breaking out of the loop it sits in.
+      if (stmt.kind === "SwitchStmt") continue;
       if (stmt.kind === "Block" && this.breaksOut(stmt.body)) return true;
       if (stmt.kind === "IfStmt") {
         if (this.breaksOut(stmt.consequent.body)) return true;
@@ -869,6 +1098,20 @@ export class Checker {
     const base = expr.object.kind === "Identifier" ? expr.object.name : "<expr>";
     return `${base}.${expr.property}`;
   }
+}
+
+/**
+ * The TypeNode for a type the checker has already worked out, which is what
+ * makes `let x = 5;` look identical downstream to `let: int x = 5;`.
+ */
+function typeNodeOf(t: YType, line: number): N.TypeNode {
+  let name = t;
+  let dims = 0;
+  while (name.endsWith("[]")) {
+    name = name.slice(0, -2);
+    dims++;
+  }
+  return { name, dims, line, column: 1 };
 }
 
 /**

@@ -86,6 +86,9 @@ Working right now:
 - Structs you declare with `struct Point { int x; int y; }`, build with
   `Point(1, 2)`, and read with `p.x`
 - `=`/`+=`/`++` on variables, array slots, and struct fields alike
+- `switch`, `do..while`, `for..of`, `for..in`, ternaries, bitwise operators,
+  template strings, `typeof`, `null`, and `let x = 5;` with the type left to
+  the compiler
 - Explicit casts with `->`, so narrowing a number is something you choose
 - Cross-file modules: `import { helper } from "./helper.ys"`
 - `console.println` and `assert` as host imports, which proves yarescript can talk
@@ -99,8 +102,9 @@ Working right now:
 
 Still to come:
 
-- Generics, a garbage collector, source maps, an editor extension, and a
-  package registry for "libs". See [ROADMAP.md](./ROADMAP.md).
+- Generics, closures, `try`/`catch`, a garbage collector, source maps, an
+  editor extension, and a package registry for "libs". See
+  [ROADMAP.md](./ROADMAP.md).
 - yarescript is not published to npm yet, so this is pre-release. When it ships,
   you will be able to install it with `npm install -g yarescript`.
 

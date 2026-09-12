@@ -195,8 +195,13 @@ export class Parser {
   private parseVarDecl(): N.VarDecl {
     const declTok = this.advance(); // let | const
     const isConst = declTok.type === TokenType.Const;
-    this.expect(TokenType.Colon, `Expected ':' after '${declTok.value}' (e.g. ${declTok.value}: int x = 1;)`);
-    const varType = this.parseType();
+    // `let: int x = 1;` says the type, `let x = 1;` lets the checker work it
+    // out from the right-hand side.
+    let varType: N.TypeNode | null = null;
+    if (this.at(TokenType.Colon)) {
+      this.advance();
+      varType = this.parseType();
+    }
     const name = this.expect(TokenType.Identifier).value;
     let init: N.Expr | null = null;
     if (this.at(TokenType.Assign)) {
@@ -223,6 +228,8 @@ export class Parser {
     if (this.at(TokenType.If)) return this.parseIf();
     if (this.at(TokenType.While)) return this.parseWhile();
     if (this.at(TokenType.For)) return this.parseFor();
+    if (this.at(TokenType.Do)) return this.parseDoWhile();
+    if (this.at(TokenType.Switch)) return this.parseSwitch();
     if (this.at(TokenType.Return)) return this.parseReturn();
     if (this.at(TokenType.Break)) {
       const t = this.advance();
@@ -245,11 +252,11 @@ export class Parser {
     this.expect(TokenType.LParen);
     const test = this.parseExpr();
     this.expect(TokenType.RParen);
-    const consequent = this.parseBlock();
+    const consequent = this.parseBody();
     let alternate: N.Block | N.IfStmt | null = null;
     if (this.at(TokenType.Else)) {
       this.advance();
-      alternate = this.at(TokenType.If) ? this.parseIf() : this.parseBlock();
+      alternate = this.at(TokenType.If) ? this.parseIf() : this.parseBody();
     }
     return { kind: "IfStmt", test, consequent, alternate, line: t.line };
   }
@@ -259,13 +266,111 @@ export class Parser {
     this.expect(TokenType.LParen);
     const test = this.parseExpr();
     this.expect(TokenType.RParen);
-    const body = this.parseBlock();
+    const body = this.parseBody();
     return { kind: "WhileStmt", test, body, line: t.line };
   }
 
-  private parseFor(): N.ForStmt {
+  private parseDoWhile(): N.DoWhileStmt {
+    const t = this.expect(TokenType.Do);
+    const body = this.parseBody();
+    this.expect(TokenType.While, "Expected 'while' to close a 'do' block");
+    this.expect(TokenType.LParen);
+    const test = this.parseExpr();
+    this.expect(TokenType.RParen);
+    const semi = this.expect(TokenType.Semicolon);
+    return { kind: "DoWhileStmt", test, body, line: t.line, endLine: semi.line };
+  }
+
+  private parseSwitch(): N.SwitchStmt {
+    const t = this.expect(TokenType.Switch);
+    this.expect(TokenType.LParen);
+    const discriminant = this.parseExpr();
+    this.expect(TokenType.RParen);
+    this.expect(TokenType.LBrace, "Expected '{' to open a switch body");
+    const cases: N.SwitchCase[] = [];
+    while (!this.at(TokenType.RBrace)) {
+      let test: N.Expr | null = null;
+      const caseTok = this.peek();
+      if (this.at(TokenType.Case)) {
+        this.advance();
+        test = this.parseExpr();
+      } else if (this.at(TokenType.Default)) {
+        this.advance();
+      } else {
+        const bad = this.peek();
+        throw new ParseError(
+          `Expected 'case' or 'default' in a switch body, got '${bad.value || bad.type}'`,
+          bad.line,
+          bad.column
+        );
+      }
+      this.expect(TokenType.Colon, "Expected ':' after a case value");
+      const consequent: N.Stmt[] = [];
+      while (!this.at(TokenType.Case) && !this.at(TokenType.Default) && !this.at(TokenType.RBrace)) {
+        consequent.push(this.parseStatement());
+      }
+      cases.push({ kind: "SwitchCase", test, consequent, line: caseTok.line });
+    }
+    const close = this.expect(TokenType.RBrace, "Expected '}' to close a switch body");
+    return { kind: "SwitchStmt", discriminant, cases, line: t.line, endLine: close.line };
+  }
+
+  /**
+   * A statement body. Braces are optional for a single statement, the way they
+   * are in the languages you came here from, and `yare fmt` puts them back.
+   */
+  private parseBody(): N.Block {
+    if (this.at(TokenType.LBrace)) return this.parseBlock();
+    const stmt = this.parseStatement();
+    return { kind: "Block", body: [stmt], line: stmt.line, endLine: stmt.line };
+  }
+
+  /**
+   * Does the head of the `for (...)` we are looking at introduce a `of` or
+   * `in` loop? Decided by scanning tokens, because `of` and `in` stay ordinary
+   * identifiers everywhere else and only mean something here.
+   */
+  private forHeadIsEach(): string | null {
+    let depth = 0;
+    for (let offset = 1; ; offset++) {
+      const t = this.peek(offset);
+      if (t.type === TokenType.EOF) return null;
+      if (t.type === TokenType.LParen) depth++;
+      else if (t.type === TokenType.RParen) {
+        if (depth === 0) return null;
+        depth--;
+      } else if (depth === 0 && t.type === TokenType.Semicolon) {
+        return null;
+      } else if (depth === 0 && t.type === TokenType.Identifier && (t.value === "of" || t.value === "in")) {
+        return t.value;
+      }
+    }
+  }
+
+  private parseFor(): N.ForStmt | N.ForOfStmt | N.ForInStmt {
     const t = this.expect(TokenType.For);
     this.expect(TokenType.LParen);
+    const each = this.forHeadIsEach();
+    if (each) {
+      let itemType: N.TypeNode | null = null;
+      let name: string;
+      if (this.at(TokenType.Let) || this.at(TokenType.Const)) {
+        this.advance();
+        if (this.at(TokenType.Colon)) {
+          this.advance();
+          itemType = this.parseType();
+        }
+        name = this.expect(TokenType.Identifier).value;
+      } else {
+        name = this.expect(TokenType.Identifier).value;
+      }
+      this.advance(); // of | in
+      const iterable = this.parseExpr();
+      this.expect(TokenType.RParen);
+      const body = this.parseBody();
+      if (each === "of") return { kind: "ForOfStmt", itemType, name, iterable, body, line: t.line };
+      return { kind: "ForInStmt", indexType: itemType, name, iterable, body, line: t.line };
+    }
     let init: N.VarDecl | N.ExprStmt | null = null;
     if (!this.at(TokenType.Semicolon)) {
       if (this.at(TokenType.Let) || this.at(TokenType.Const)) {
@@ -285,7 +390,7 @@ export class Parser {
     let update: N.Expr | null = null;
     if (!this.at(TokenType.RParen)) update = this.parseExpr();
     this.expect(TokenType.RParen);
-    const body = this.parseBlock();
+    const body = this.parseBody();
     return { kind: "ForStmt", init, test, update, body, line: t.line };
   }
 
@@ -304,13 +409,19 @@ export class Parser {
   }
 
   private parseAssign(): N.Expr {
-    const left = this.parseLogicalOr();
+    const left = this.parseConditional();
     const assignOps = new Set([
       TokenType.Assign,
       TokenType.PlusAssign,
       TokenType.MinusAssign,
       TokenType.StarAssign,
       TokenType.SlashAssign,
+      TokenType.PercentAssign,
+      TokenType.AmpAssign,
+      TokenType.PipeAssign,
+      TokenType.CaretAssign,
+      TokenType.ShlAssign,
+      TokenType.ShrAssign,
     ]);
     if (assignOps.has(this.peek().type)) {
       const opTok = this.advance();
@@ -318,6 +429,17 @@ export class Parser {
       return { kind: "AssignExpr", operator: opTok.value, target: left, value, line: opTok.line };
     }
     return left;
+  }
+
+  /** `a ? b : c`. Right associative, and the arms may be assignments. */
+  private parseConditional(): N.Expr {
+    const test = this.parseLogicalOr();
+    if (!this.at(TokenType.Question)) return test;
+    const t = this.advance();
+    const consequent = this.parseAssign();
+    this.expect(TokenType.Colon, "Expected ':' in the middle of a ternary");
+    const alternate = this.parseAssign();
+    return { kind: "ConditionalExpr", test, consequent, alternate, line: t.line };
   }
 
   private parseLogicalOr(): N.Expr {
@@ -331,18 +453,55 @@ export class Parser {
   }
 
   private parseLogicalAnd(): N.Expr {
-    let left = this.parseEquality();
+    let left = this.parseBitwiseOr();
     while (this.at(TokenType.And)) {
       const t = this.advance();
-      const right = this.parseEquality();
+      const right = this.parseBitwiseOr();
       left = { kind: "BinaryExpr", operator: "&&", left, right, line: t.line };
+    }
+    return left;
+  }
+
+  // The three bitwise levels sit between && and ==, which is where every
+  // C-shaped language puts them, so `a & 1 == 0` means what you expect it to.
+  private parseBitwiseOr(): N.Expr {
+    let left = this.parseBitwiseXor();
+    while (this.at(TokenType.Pipe)) {
+      const t = this.advance();
+      const right = this.parseBitwiseXor();
+      left = { kind: "BinaryExpr", operator: "|", left, right, line: t.line };
+    }
+    return left;
+  }
+
+  private parseBitwiseXor(): N.Expr {
+    let left = this.parseBitwiseAnd();
+    while (this.at(TokenType.Caret)) {
+      const t = this.advance();
+      const right = this.parseBitwiseAnd();
+      left = { kind: "BinaryExpr", operator: "^", left, right, line: t.line };
+    }
+    return left;
+  }
+
+  private parseBitwiseAnd(): N.Expr {
+    let left = this.parseEquality();
+    while (this.at(TokenType.Amp)) {
+      const t = this.advance();
+      const right = this.parseEquality();
+      left = { kind: "BinaryExpr", operator: "&", left, right, line: t.line };
     }
     return left;
   }
 
   private parseEquality(): N.Expr {
     let left = this.parseRelational();
-    while (this.at(TokenType.Eq) || this.at(TokenType.NotEq)) {
+    while (
+      this.at(TokenType.Eq) ||
+      this.at(TokenType.NotEq) ||
+      this.at(TokenType.EqEqEq) ||
+      this.at(TokenType.NotEqEq)
+    ) {
       const t = this.advance();
       const right = this.parseRelational();
       left = { kind: "BinaryExpr", operator: t.value, left, right, line: t.line };
@@ -351,8 +510,18 @@ export class Parser {
   }
 
   private parseRelational(): N.Expr {
-    let left = this.parseAdditive();
+    let left = this.parseShift();
     while ([TokenType.Lt, TokenType.Gt, TokenType.LtEq, TokenType.GtEq].includes(this.peek().type)) {
+      const t = this.advance();
+      const right = this.parseShift();
+      left = { kind: "BinaryExpr", operator: t.value, left, right, line: t.line };
+    }
+    return left;
+  }
+
+  private parseShift(): N.Expr {
+    let left = this.parseAdditive();
+    while (this.at(TokenType.Shl) || this.at(TokenType.Shr)) {
       const t = this.advance();
       const right = this.parseAdditive();
       left = { kind: "BinaryExpr", operator: t.value, left, right, line: t.line };
@@ -381,10 +550,21 @@ export class Parser {
   }
 
   private parseUnary(): N.Expr {
-    if (this.at(TokenType.Minus) || this.at(TokenType.Not) || this.at(TokenType.Increment) || this.at(TokenType.Decrement)) {
+    if (
+      this.at(TokenType.Minus) ||
+      this.at(TokenType.Not) ||
+      this.at(TokenType.Increment) ||
+      this.at(TokenType.Decrement) ||
+      this.at(TokenType.Tilde)
+    ) {
       const t = this.advance();
       const argument = this.parseUnary();
       return { kind: "UnaryExpr", operator: t.value, argument, prefix: true, line: t.line };
+    }
+    if (this.at(TokenType.TypeOf)) {
+      const t = this.advance();
+      const argument = this.parseUnary();
+      return { kind: "TypeOfExpr", argument, line: t.line };
     }
     return this.parsePostfix();
   }
@@ -459,6 +639,12 @@ export class Parser {
       case TokenType.Identifier:
         this.advance();
         return { kind: "Identifier", name: t.value, line: t.line };
+      case TokenType.Null:
+        this.advance();
+        return { kind: "NullLiteral", line: t.line };
+      case TokenType.Template:
+        this.advance();
+        return this.buildTemplate(t.value, t.line);
       case TokenType.LParen: {
         this.advance();
         const expr = this.parseExpr();
@@ -496,6 +682,61 @@ export class Parser {
       default:
         throw new ParseError(`Unexpected token '${t.value || t.type}' in expression`, t.line, t.column);
     }
+  }
+
+  /** One expression and nothing after it, which is what `${...}` holds. */
+  parseSingleExpression(): N.Expr {
+    const expr = this.parseExpr();
+    const t = this.peek();
+    if (t.type !== TokenType.EOF) {
+      throw new ParseError(`Unexpected '${t.value || t.type}' in an expression`, t.line, t.column);
+    }
+    return expr;
+  }
+
+  /**
+   * Splits the raw inside of a backtick string into text and interpolations.
+   * The interpolation bodies are handed back to `parse`, so anything you can
+   * write in an expression you can write inside `${...}`.
+   */
+  private buildTemplate(raw: string, line: number): N.TemplateExpr {
+    const parts: (string | N.Expr)[] = [];
+    let buf = "";
+    let i = 0;
+    while (i < raw.length) {
+      const ch = raw[i];
+      if (ch === "\\" && i + 1 < raw.length) {
+        const next = raw[i + 1];
+        buf += next === "n" ? "\n" : next === "t" ? "\t" : next === "\\" ? "\\" : next;
+        i += 2;
+        continue;
+      }
+      if (ch === "$" && raw[i + 1] === "{") {
+        let depth = 0;
+        let j = i + 1;
+        for (; j < raw.length; j++) {
+          if (raw[j] === "{") depth++;
+          else if (raw[j] === "}") {
+            depth--;
+            if (depth === 0) break;
+          }
+        }
+        if (j >= raw.length) {
+          throw new ParseError("Unterminated ${ in a template string", line, 1);
+        }
+        parts.push(buf);
+        buf = "";
+        const inner = raw.slice(i + 2, j);
+        const where = `${this.fileName} (template)`;
+        parts.push(new Parser(tokenize(inner, where), where).parseSingleExpression());
+        i = j + 1;
+        continue;
+      }
+      buf += ch;
+      i++;
+    }
+    parts.push(buf);
+    return { kind: "TemplateExpr", parts, line };
   }
 }
 

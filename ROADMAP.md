@@ -52,10 +52,23 @@ These used to be on this list and are now in the compiler, documented in
 - Structs can mention themselves, so `struct XmlNode { XmlNode[] children; }`
   is a legal declaration, and a module's structs travel with its functions
   through the linker.
+- The syntax you reach for without thinking: `switch` with fallthrough,
+  `do..while`, `for..of` and `for..in`, `a ? b : c`, `& | ^ << >> ~` with
+  their compound forms, `===` and `!==`, backtick template strings that
+  interpolate anything printable, `typeof`, `null` for the reference types,
+  `s += "more"`, and `let x = 5;` with the type left to the compiler.
 - Apache License 2.0.
 
 ## Near-term (language completeness)
 
+- [ ] Functions as values: `let f = double;`, arrow functions, and closures.
+      This is the last big thing standing between yarescript and the way
+      JavaScript programs are actually written, and it needs a function table
+      and an environment representation in codegen.
+- [ ] `try`/`catch`/`throw`, or a `Result` type, so a function that can fail
+      has somewhere to put the failure.
+- [ ] `Map` and `Set`, `xs.push(x)`, `s.split(",")`, and the rest of the
+      standard library surface JavaScript programs lean on.
 - [ ] A minimal generics story, now that there are types worth being generic
       over.
 - [ ] `console.println` for a whole array or struct, so you can look at one

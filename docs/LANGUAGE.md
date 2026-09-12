@@ -118,14 +118,25 @@ let: TYPE name = expr;      // mutable
 const: TYPE name = expr;    // immutable, must be initialized
 ```
 
-The type always comes immediately after the colon. `const` bindings must
-be initialized at the declaration site and can never be reassigned
-(enforced by the type checker, not just convention).
+The type comes immediately after the colon, or it can be left off entirely
+when the value on the right makes it obvious. `const` bindings must be
+initialized at the declaration site and can never be reassigned (enforced by
+the type checker, not just convention).
 
 ```
 let: int x = 1;
 const: string greeting = "hi";
+let count = 0;          // int, from the 0
+let ratio = 0.5;        // double
+let label = "yare";     // string
+let xs = new int[3];    // int[]
 ```
+
+Inference is not guessing. It takes the type the checker already worked out
+for the initializer and writes it into the declaration, so `let count = 0;`
+and `let: int count = 0;` are the same variable as far as the rest of the
+compiler is concerned. A `null` on its own has no type to offer, so
+`let x = null;` is an error and `let: int[] x = null;` is not.
 
 An integer literal too wide for `int` becomes a `long` automatically, so
 `let: long big = 3000000000;` works and `let: int big = 3000000000;` is a
@@ -168,14 +179,59 @@ private function: int square(int x) {
 
 - `if (cond) { ... } else if (cond) { ... } else { ... }`
 - `while (cond) { ... }`
+- `do { ... } while (cond);`, which runs the body once before asking
 - `for (init; cond; update) { ... }`, where `init` may be a `let`/`const`
   declaration or an expression statement
+- `for (let: TYPE name of xs) { ... }`, over the elements of an array or the
+  chars of a string
+- `for (let: int i in xs) { ... }`, over the indexes of an array or a string
+- `switch (expr) { case v: ... default: ... }`
 - `return expr;` / `return;`
-- `break;` / `continue;` (only valid inside a loop)
+- `break;` / `continue;` (inside a loop, or inside a `switch`)
 - expression statements, e.g. a bare function call: `doSomething();`
 
-`if`/`while`/`for` conditions must be `bool`. There is no truthiness
+`if`/`while`/`for`/`do` conditions must be `bool`. There is no truthiness
 coercion from `int` or `string`.
+
+Braces are optional around a single-statement body, so `if (ok) go();` is
+legal. `yare fmt` puts the braces back.
+
+A `switch` takes an integer, a `char`, a `string`, or a `bool`. Cases fall
+through until a `break`, which is the behaviour you already know, and a
+`break` inside a `switch` leaves the `switch` rather than the loop around it.
+`of` and `in` are only special inside a `for` head; everywhere else they are
+ordinary names.
+
+```
+public function: void main() {
+    let: int[] xs = [4, 5, 6];
+    let: int total = 0;
+    for (let: int x of xs) {
+        total += x;
+    }
+    for (let: int i in xs) {
+        console.println(i);        // 0, 1, 2
+    }
+    let: string word = "";
+    switch (total) {
+        case 15: {
+            word = "fifteen";
+        }
+        case 16: {
+            word = word + " or sixteen";
+            break;
+        }
+        default: {
+            word = "something else";
+        }
+    }
+    console.println(word);         // fifteen or sixteen
+    let: int i = 0;
+    do {
+        i++;
+    } while (i < 3);
+}
+```
 
 ## Expressions & operators
 
@@ -185,16 +241,29 @@ arithmetic widens the narrower operand, so `int * double` is a `double`.
 
 Comparison: `== != < > <= >=`. `==`/`!=` work on numbers, `bool`, and
 `string`; the ordering comparisons work on numeric types and on strings, where
-they compare by code point. Arrays and structs do not compare at all.
+they compare by code point. Arrays and structs do not compare at all, except
+against `null`, which is how you ask whether a reference is empty. `===` and
+`!==` are accepted as spellings of `==` and `!=`; nothing in yarescript
+coerces, so there is no second meaning for them to carry.
+
+Bitwise: `& | ^ << >>` and unary `~`, on integer types only. Shifts keep the
+sign of a signed type and fill with zeroes for an unsigned one, which is what
+`>>` means in each case. A `float` has no bits to move, so `1.5 & 1` is a
+compile error rather than a surprise.
+
+Conditional: `cond ? a : b`. The condition must be `bool`, the two arms have
+to agree on a type (with the usual widening), and only the arm that was taken
+is evaluated.
 
 Logical: `&& ||` (both operands must be `bool`) and unary `!`. Both binary
 logical operators short-circuit, so `i < s.length && s[i] == (97 -> char)`
 never evaluates the index the first half just ruled out.
 
-Assignment: `= += -= *= /=`, and unary `++`/`--` (prefix and postfix). The
-target can be a variable, an array slot, or a struct field, so `xs[i] += 2`
-and `p.x++` work the way they look. `const` protects a variable from being
-reassigned and from being written through.
+Assignment: `= += -= *= /= %= &= |= ^= <<= >>=`, and unary `++`/`--` (prefix
+and postfix). The target can be a variable, an array slot, or a struct field,
+so `xs[i] += 2` and `p.x++` work the way they look. `s += "more"` works on a
+string, because building a string one piece at a time is not a crime. `const`
+protects a variable from being reassigned and from being written through.
 
 Member access: `s.length` and `xs.length` for a count, `p.field` for a struct
 field, and `name(args)` for the dotted host functions such as
@@ -203,6 +272,27 @@ field, and `name(args)` for the dotted host functions such as
 Function calls: `name(args...)`. Calls are resolved to a user-defined
 yarescript function, to a **host function** (see below), or to a struct name,
 which builds one.
+
+Template strings: a backtick string with `${...}` in it. Anything printable
+goes inside the braces, which means text, a `char`, a `bool`, and every
+numeric type. A `double` prints with up to six decimal places and no trailing
+zeroes.
+
+```
+let: string name = "yare";
+let: int n = 42;
+console.println(`hi ${name}, ${n}, ${n / 2}, ${1.5}, ${true}`);
+// hi yare, 42, 21, 1.5, true
+```
+
+`typeof expr` gives the type as a `string`, answered at compile time because
+by then the type is a fact: `typeof 1` is `"int"` and `typeof xs` is
+`"int[]"`.
+
+`null` is a value for the three kinds of reference there are: an array, a
+struct, and a string. It fits nowhere else, it has to be given a type by
+something around it, and it compares with `==` and `!=`. Reading through a
+null traps, the way reading past the end of an array does.
 
 ## Strings
 

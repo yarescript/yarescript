@@ -8,25 +8,36 @@ const INDENT = "    ";
 // Operator precedence, matching the parser exactly. A formatter that gets
 // these wrong does not reformat your program, it replaces it with a different
 // one that looks similar. See `sub()`.
+// The binding order, tightest last. Bitwise sits between && and ==, and
+// shifts between the comparisons and the adding, which is where C put them
+// and where every language since has left them.
 const PREC: Record<string, number> = {
-  "||": 2,
-  "&&": 3,
-  "==": 4,
-  "!=": 4,
-  "<": 5,
-  ">": 5,
-  "<=": 5,
-  ">=": 5,
-  "+": 6,
-  "-": 6,
-  "*": 7,
-  "/": 7,
-  "%": 7,
+  "||": 3,
+  "&&": 4,
+  "|": 5,
+  "^": 6,
+  "&": 7,
+  "==": 8,
+  "!=": 8,
+  "===": 8,
+  "!==": 8,
+  "<": 9,
+  ">": 9,
+  "<=": 9,
+  ">=": 9,
+  "<<": 10,
+  ">>": 10,
+  "+": 11,
+  "-": 11,
+  "*": 12,
+  "/": 12,
+  "%": 12,
 };
 const PREC_ASSIGN = 1;
-const PREC_PREFIX = 8;
-const PREC_POSTFIX = 9;
-const PREC_ATOM = 10;
+const PREC_TERNARY = 2;
+const PREC_PREFIX = 13;
+const PREC_POSTFIX = 14;
+const PREC_ATOM = 15;
 
 /**
  * Reformats yarescript source into the one true layout: four-space indents,
@@ -217,6 +228,59 @@ class Printer {
       case "ReturnStmt":
         this.line(`return${stmt.argument ? " " + this.expr(stmt.argument) : ""};`, stmt.line);
         break;
+      case "DoWhileStmt":
+        this.line("do {", stmt.line);
+        this.lastEndLine = stmt.line;
+        this.depth++;
+        this.printBody(stmt.body);
+        this.depth--;
+        this.line(`} while (${this.expr(stmt.test)});`);
+        break;
+      case "SwitchStmt": {
+        this.line(`switch (${this.expr(stmt.discriminant)}) {`, stmt.line);
+        this.lastEndLine = stmt.line;
+        for (const c of stmt.cases) {
+          this.depth++;
+          const head = c.test ? `case ${this.expr(c.test)}:` : "default:";
+          const only = c.consequent.length === 1 ? c.consequent[0] : null;
+          if (only && only.kind === "Block") {
+            // `case 1: {` stays on one line, the way you wrote it
+            this.line(`${head} {`, c.line);
+            this.lastEndLine = c.line;
+            this.depth++;
+            for (const inner of only.body) this.printStmt(inner);
+            this.depth--;
+            this.line("}");
+          } else {
+            this.line(head, c.line);
+            this.lastEndLine = c.line;
+            this.depth++;
+            for (const inner of c.consequent) this.printStmt(inner);
+            this.depth--;
+          }
+          this.depth--;
+        }
+        this.line("}");
+        break;
+      }
+      case "ForOfStmt": {
+        const decl = stmt.itemType ? `let: ${N.typeSpelling(stmt.itemType)} ${stmt.name}` : `let ${stmt.name}`;
+        this.line(`for (${decl} of ${this.expr(stmt.iterable)}) {`, stmt.line);
+        this.depth++;
+        this.printBody(stmt.body);
+        this.depth--;
+        this.line("}");
+        break;
+      }
+      case "ForInStmt": {
+        const decl = stmt.indexType ? `let: ${N.typeSpelling(stmt.indexType)} ${stmt.name}` : `let ${stmt.name}`;
+        this.line(`for (${decl} in ${this.expr(stmt.iterable)}) {`, stmt.line);
+        this.depth++;
+        this.printBody(stmt.body);
+        this.depth--;
+        this.line("}");
+        break;
+      }
       case "BreakStmt":
         this.line("break;", stmt.line);
         break;
@@ -262,9 +326,9 @@ class Printer {
 
   renderVarDecl(stmt: N.VarDecl): string {
     const kw = stmt.isConst ? "const" : "let";
-    return `${kw}: ${N.typeSpelling(stmt.varType)} ${stmt.name}${
-      stmt.init ? " = " + this.expr(stmt.init) : ""
-    }`;
+    // A declaration with no type keeps no type: `let x = 5;` stays short.
+    const type = stmt.varType ? `: ${N.typeSpelling(stmt.varType)} ` : " ";
+    return `${kw}${type}${stmt.name}${stmt.init ? " = " + this.expr(stmt.init) : ""}`;
   }
 
   private expr(e: N.Expr): string {
@@ -285,7 +349,7 @@ class Printer {
       case "CallExpr":
         return `${this.sub(e.callee, PREC_POSTFIX)}(${e.args.map((a) => this.expr(a)).join(", ")})`;
       case "BinaryExpr": {
-        const prec = PREC[e.operator] ?? 6;
+        const prec = PREC[e.operator] ?? 11;
         const left = this.sub(e.left, prec);
         // Every binary operator here is left-associative, so the right operand
         // needs parens at equal precedence too: a - (b - c) is not a - b - c.
@@ -317,6 +381,27 @@ class Printer {
         return `[${e.elements.map((el) => this.expr(el)).join(", ")}]`;
       case "NewArrayExpr":
         return `new ${N.typeSpelling(e.elemType)}[${this.expr(e.size)}]`;
+      case "NullLiteral":
+        return "null";
+      case "TypeOfExpr":
+        return `typeof ${this.sub(e.argument, PREC_PREFIX)}`;
+      case "ConditionalExpr":
+        return `${this.sub(e.test, PREC_TERNARY + 1)} ? ${this.expr(e.consequent)} : ${this.expr(e.alternate)}`;
+      case "TemplateExpr": {
+        let out = "`";
+        for (const part of e.parts) {
+          if (typeof part === "string") {
+            out += part
+              .replace(/\\/g, "\\\\")
+              .replace(/`/g, "\\`")
+              .replace(/\n/g, "\\n")
+              .replace(/\t/g, "\\t");
+            continue;
+          }
+          out += "${" + this.expr(part) + "}";
+        }
+        return out + "`";
+      }
     }
   }
 
@@ -331,8 +416,10 @@ function precOf(e: N.Expr): number {
   switch (e.kind) {
     case "AssignExpr":
       return PREC_ASSIGN;
+    case "ConditionalExpr":
+      return PREC_TERNARY;
     case "BinaryExpr":
-      return PREC[e.operator] ?? 6;
+      return PREC[e.operator] ?? 11;
     case "UnaryExpr":
       return e.prefix ? PREC_PREFIX : PREC_POSTFIX;
     case "CallExpr":
@@ -352,7 +439,13 @@ function endLineOf(stmt: N.Stmt): number {
       return stmt.endLine;
     case "WhileStmt":
     case "ForStmt":
+    case "ForOfStmt":
+    case "ForInStmt":
       return stmt.body.endLine;
+    case "DoWhileStmt":
+      return stmt.endLine;
+    case "SwitchStmt":
+      return stmt.endLine;
     case "IfStmt":
       return ifEndLine(stmt);
     default:

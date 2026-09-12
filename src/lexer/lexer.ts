@@ -141,6 +141,55 @@ export function tokenize(
       continue;
     }
 
+    // A backtick string. The text between the backticks is kept whole and the
+    // parser splits out the ${...} parts, because only a parser can tell a
+    // closing brace of an interpolation from a brace inside one.
+    if (c === "`") {
+      advance();
+      let raw = "";
+      let depth = 0;
+      for (;;) {
+        if (i >= source.length) {
+          throw new LexError(`Unterminated template string in ${fileName}`, startLine, startCol);
+        }
+        const ch = advance();
+        if (ch === "\\" && i < source.length) {
+          raw += ch + advance();
+          continue;
+        }
+        if (ch === "$" && peek() === "{") {
+          raw += ch + advance();
+          depth++;
+          continue;
+        }
+        if (depth > 0 && ch === "}") {
+          raw += ch;
+          depth--;
+          continue;
+        }
+        if (ch === "`" && depth === 0) break;
+        raw += ch;
+      }
+      push(TokenType.Template, raw, startLine, startCol);
+      continue;
+    }
+
+    // three-char operators first, because `===` must not lex as `==` then `=`
+    const three = c + (peek(1) ?? "") + (peek(2) ?? "");
+    const threeCharMap: Record<string, TokenType> = {
+      "===": TokenType.EqEqEq,
+      "!==": TokenType.NotEqEq,
+      "<<=": TokenType.ShlAssign,
+      ">>=": TokenType.ShrAssign,
+    };
+    if (threeCharMap[three]) {
+      advance();
+      advance();
+      advance();
+      push(threeCharMap[three], three, startLine, startCol);
+      continue;
+    }
+
     // two-char operators, checked before the one-char ones so that `->` is an
     // arrow and not a minus sign followed by greater-than
     const two = c + (peek(1) ?? "");
@@ -158,6 +207,12 @@ export function tokenize(
       "++": TokenType.Increment,
       "--": TokenType.Decrement,
       "->": TokenType.Arrow,
+      "%=": TokenType.PercentAssign,
+      "<<": TokenType.Shl,
+      ">>": TokenType.Shr,
+      "&=": TokenType.AmpAssign,
+      "|=": TokenType.PipeAssign,
+      "^=": TokenType.CaretAssign,
     };
     if (twoCharMap[two]) {
       advance();
@@ -187,6 +242,11 @@ export function tokenize(
       ">": TokenType.Gt,
       "!": TokenType.Not,
       "@": TokenType.At,
+      "&": TokenType.Amp,
+      "|": TokenType.Pipe,
+      "^": TokenType.Caret,
+      "~": TokenType.Tilde,
+      "?": TokenType.Question,
     };
     if (oneCharMap[c]) {
       advance();
