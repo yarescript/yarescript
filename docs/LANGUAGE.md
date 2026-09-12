@@ -21,7 +21,8 @@ Source files use `.ys`. A project's entry point is declared in
 ## Types
 
 yarescript is statically typed. Every variable, parameter, and function
-return value has an explicit primitive type. There is no inference on
+return value has an explicit type: one of the scalars below, an array of them
+(`int[]`), or a struct you declared yourself. There is no inference on
 declarations, and there is no `any`.
 
 | Type     | WebAssembly representation       | Range and notes |
@@ -183,15 +184,23 @@ is a compile error, matching WebAssembly's numeric ops). Mixed-width
 arithmetic widens the narrower operand, so `int * double` is a `double`.
 
 Comparison: `== != < > <= >=`. `==`/`!=` work on numbers, `bool`, and
-`string`; the ordering comparisons only work on numeric types.
+`string`; the ordering comparisons work on numeric types and on strings, where
+they compare by code point. Arrays and structs do not compare at all.
 
 Logical: `&& ||` (both operands must be `bool`) and unary `!`.
 
-Assignment: `= += -= *= /=`, and unary `++`/`--` (prefix and postfix),
-all on plain variables today.
+Assignment: `= += -= *= /=`, and unary `++`/`--` (prefix and postfix). The
+target can be a variable, an array slot, or a struct field, so `xs[i] += 2`
+and `p.x++` work the way they look. `const` protects a variable from being
+reassigned and from being written through.
 
-Function calls: `name(args...)`. Calls are resolved either to a
-user-defined yarescript function or to a **host function** (see below).
+Member access: `s.length` and `xs.length` for a count, `p.field` for a struct
+field, and `name(args)` for the dotted host functions such as
+`console.println`.
+
+Function calls: `name(args...)`. Calls are resolved to a user-defined
+yarescript function, to a **host function** (see below), or to a struct name,
+which builds one.
 
 ## Strings
 
@@ -212,8 +221,89 @@ Concatenation allocates from a bump allocator in linear memory, and the
 module grows its memory as needed. There is no garbage collector yet, so a
 program that builds strings in a long loop keeps every intermediate result
 alive. A `char` concatenates onto a string from either side, so `"a" + c` and `c + "a"`
-both work. Ordering comparisons (`<`, `>` and friends) on strings are a compile
-error for now.
+both work.
+
+Strings also order with `<`, `>`, `<=`, and `>=`. The order is byte order,
+which for UTF-8 is also code point order: `"Z" < "a"` is true and `"apple" <
+"apples"` is true because it is shorter. It is not a locale collation and it
+does not pretend to be one.
+
+## Arrays
+
+```
+TYPE[] NAME
+```
+
+An array is a length followed by that many slots of one type. You build one
+from a literal or with a size, index it with `[i]`, and measure it with
+`.length`:
+
+```
+let: int[] xs = [10, 20, 30];
+console.println(xs.length);      // 3
+console.println(xs[0]);          // 10
+xs[1] = 99;
+xs[1]++;                         // slots take ++ and += like variables do
+
+let: int[] zeros = new int[5];   // zero filled, size can be a variable
+let: u8[] bytes = new u8[256];   // one byte each: a real byte array
+let: string[] names = ["ada", "grace"];
+let: int[][] grid = [[1, 2], [3, 4]];
+```
+
+- An element type can be anything, including another array or a struct.
+- Indexing is bounds checked. Out of range traps rather than reading whatever
+  happens to be next door.
+- An array literal takes its type from where it is going: `let: int[] xs =
+  [1, 2, 3];` and `total([1, 2, 3])` both work, while a bare `[1, 2]` with
+  nothing to aim at is an error.
+- Arrays are invariant. An `int[]` is not a `double[]`, and widening does not
+  reach inside them.
+- Two arrays are never `==`, even with the same contents. They are two arrays.
+- There is no garbage collector yet, so an array you stop pointing at keeps
+  its memory until the module is done.
+
+## Structs
+
+```
+struct NAME {
+    TYPE field;
+    ...
+}
+```
+
+A struct is a fixed-layout record you declare at the top level and build like
+a function call, with the fields in the order you wrote them:
+
+```
+struct Point {
+    int x;
+    int y;
+}
+
+public function: int manhattan(Point p) {
+    return p.x + p.y;
+}
+
+public function: void main() {
+    let: Point p = Point(3, 4);
+    console.println(p.x);       // 3
+    p.x = 10;
+    p.y++;
+    console.println(manhattan(p));
+}
+```
+
+- Fields can be any type, including arrays and other structs.
+- Fields are laid out in declaration order at their natural alignment, and the
+  layout is worked out once by the type checker, so what you read is what was
+  stored.
+- A struct variable holds a pointer to the record. Assigning one to another
+  shares it rather than copying it, and so does putting it in another struct.
+- A struct may only contain types that already exist, which is what stops one
+  from containing itself.
+- Structs are not numbers: they do not compare with `==`, do not take `+`, and
+  do not cast.
 
 ## The standard surface: host functions
 

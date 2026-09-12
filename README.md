@@ -76,11 +76,17 @@ Working right now:
   room
 - A standard library you import with `@modules.import("str")`, linked function
   by function into `.yare/dep/build/*.yare.dep`
+- Arrays of anything: `int[]`, `string[]`, `u8[]`, `int[][]`, built with
+  `[1, 2, 3]` or `new int[n]`, indexed with a bounds check
+- Structs you declare with `struct Point { int x; int y; }`, build with
+  `Point(1, 2)`, and read with `p.x`
+- `=`/`+=`/`++` on variables, array slots, and struct fields alike
 - Explicit casts with `->`, so narrowing a number is something you choose
 - Cross-file modules: `import { helper } from "./helper.ys"`
 - `console.println` and `assert` as host imports, which proves yarescript can talk
   to the outside world without becoming JavaScript
-- `yare init` / `yare build` / `yare run` / `yare fmt` / `yare test` CLI
+- `yare init` / `yare check` / `yare build` / `yare run` / `yare fmt` /
+  `yare test` CLI
 - Error messages that suggest what you meant: `prntln` gets pointed at
   `console.println`, `totl` at `total`, `integ` at `int`
 - `config.yare` project manifest
@@ -88,8 +94,9 @@ Working right now:
 
 Still to come:
 
-- Arrays, structs, generics, a garbage collector, source maps, an editor
-  extension, and a package registry for "libs". See [ROADMAP.md](./ROADMAP.md).
+- Generics, a garbage collector, real json/xml/toml documents, source maps, an
+  editor extension, and a package registry for "libs". See
+  [ROADMAP.md](./ROADMAP.md).
 - yarescript is not published to npm yet, so this is pre-release. When it ships,
   you will be able to install it with `npm install -g yarescript`.
 
@@ -107,6 +114,7 @@ node ../../dist/cli/index.js run     # or: yare run
 Then try the other commands from inside a project:
 
 ```bash
+node ../../dist/cli/index.js check         # type-checks and writes nothing
 node ../../dist/cli/index.js test          # runs every *.test.ys file
 node ../../dist/cli/index.js fmt --check   # reports what needs reformatting
 ```
@@ -115,7 +123,8 @@ See [`examples/kitchen-sink`](./examples/kitchen-sink) for a bigger tour:
 recursion (`fib`), loops, `break`/`continue`, every primitive type, and a
 browser demo (`index.html`) that loads the compiled `.wasm` directly.
 [`examples/modules`](./examples/modules) shows a two-file project with imports
-and a test file.
+and a test file, and [`examples/records`](./examples/records) puts arrays and
+structs to work on a small basket of items.
 
 ## How a project is laid out
 
@@ -208,8 +217,11 @@ public function: void main() {
 - Numbers widen on their own and narrow only when you ask: `let: int n = pi -> int;`
   Signed and unsigned never mix without a cast, and a narrow value wraps the
   way its width says it should.
-- Strings concatenate with `+` and compare with `==`, and you can index them:
-  `s[0]` is a `char` and `s.length` is an `int`.
+- Strings concatenate with `+`, compare with `==`, order with `<`, and can be
+  indexed: `s[0]` is a `char` and `s.length` is an `int`.
+- Arrays read `let: int[] xs = [1, 2, 3];` or `new int[n]`, and structs read
+  `let: Point p = Point(1, 2);` after a `struct Point { int x; int y; }` at
+  the top of the file. `xs[i]` and `p.x` are values you can read and write.
 - Other files come in with `import { helper } from "./helper.ys";`
 - `main()` is required, and it is what `yare run` calls.
 

@@ -61,7 +61,7 @@ src/fmt/          formatter.ts               `yare fmt`
 src/test-runner/  runner.ts                  `yare test`
 src/cli/          config.ts, index.ts        config.yare and the yare command
 src/test/         *.test.ts                  the test suite
-examples/         hello-world, kitchen-sink, modules
+examples/         hello-world, kitchen-sink, modules, stdlib, records
 ```
 
 ## Adding a language feature
@@ -136,6 +136,21 @@ They are also the fastest way to find out a language feature is missing.
   twin and differ only in the instruction `binOps()` picks: `div_u`, `lt_u`,
   and friends. Add a type in `src/checker/types.ts` and those two functions
   are where it quietly breaks if you forget them.
+- **Struct layout lives in the checker, not in codegen.** `checkStructDecl`
+  walks the fields, aligns each one naturally, and stores the offsets in
+  `CheckedProgram.structs`. Codegen only reads them. If a field ever reads the
+  wrong value, the two have disagreed, and the checker is the one to believe.
+- **Arrays and strings share a header shape.** Both are a `u32` length followed
+  by the data, except that eight byte elements (`long`, `u64`, `double`) get an
+  eight byte header so the first element stays aligned. That is
+  `arrayHeader()` in codegen, and `.length` works on both for the same reason.
+- **Compound types are strings, and that is deliberate.** `YType` covers the
+  fourteen scalars plus `int[]` and struct names, so `isArrayType()` and
+  `elemTypeOf()` are how you ask about them. Every switch over `YType` needs a
+  `default` now, which is the price of a type list you cannot write down.
+- **`yare check` and `yare build` share `frontEnd()`.** Linking happens before
+  checking, because `@modules.import` adds functions the checker has to know
+  about. `check` passes `write: false` so a type-check emits nothing at all.
 - **A bare number literal borrows the type beside it.** `Checker.adoptLiteral`
   is what lets `i + 2` typecheck on a `u8`, and `checkExprAs` is what lets
   `let: u8 m = 200;` typecheck at all, since `int` is not assignable to `u8`.
@@ -160,8 +175,8 @@ They are also the fastest way to find out a language feature is missing.
 
 ## Not implemented yet
 
-Structs, generics, arrays, a garbage collector, source maps, a WASI target, an
-editor extension, a real registry behind `libs` in `config.yare`, parsing json
-and xml and toml documents rather than building them, and publishing to npm.
+Generics, a garbage collector, source maps, a WASI target, an editor
+extension, a real registry behind `libs` in `config.yare`, parsing json and xml
+and toml documents rather than building them, and publishing to npm.
 The current list lives in `ROADMAP.md`, which is the file to update when any of
 that changes.

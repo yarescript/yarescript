@@ -33,23 +33,28 @@ These used to be on this list and are now in the compiler, documented in
   thirteen of which hold a value. Narrow values wrap the way their width says,
   unsigned values compare unsigned, and signed meets unsigned only where you
   write a cast.
+- Arrays of every type (`int[]`, `string[]`, `u8[]`, `int[][]`), built from
+  literals or with `new int[n]`, indexed with a bounds check that traps.
+- Structs with `struct Point { int x; int y; }`, built with `Point(1, 2)` and
+  read with `p.x`, laid out once by the type checker and honoured by codegen.
+- Member access on real values, and `=`/`+=`/`++` on array slots and struct
+  fields rather than only on plain variables.
+- Ordering comparisons on strings, in code point order, which is the collation
+  answer this project is willing to defend: predictable and locale-free.
+- `yare check`, which type-checks a project and emits nothing at all.
 - Apache License 2.0.
 
 ## Near-term (language completeness)
 
-- [ ] Arrays (`int[]`, `string[]`, ...) and a fixed-size struct/record
-      type for "high level" data, not just scalars.
 - [ ] Real json, xml, and toml documents. The `json` module can build json
-      today (`ofInt`, `ofBool`, `quote`). Reading a document back needs a value
-      type that can hold "a number or a list or a map", which means structs
-      first. That is the blocker, and it is the only one.
-- [ ] `struct`/custom types, and eventually a minimal generics story.
-- [ ] Ordering comparisons on strings, once there is a collation answer
-      worth defending.
-- [ ] Member access on real values (`point.x`, `items.length`), which today
-      only exists as the `console.println` call path.
-- [ ] Compound assignment and `++`/`--` on anything other than a plain
-      variable.
+      today (`ofInt`, `ofBool`, `quote`). Reading one back now has what it
+      needs: structs can hold "a number or a list or a map" and arrays can hold
+      the list. What is missing is the parsers and a `json.Value` struct to
+      hand you.
+- [ ] A minimal generics story, now that there are types worth being generic
+      over.
+- [ ] `console.println` for a whole array or struct, so you can look at one
+      without writing a loop.
 
 ## Tooling
 
@@ -63,7 +68,6 @@ These used to be on this list and are now in the compiler, documented in
       gets implemented. It will likely sit on an npm-backed registry
       under the hood, but you consume it through `yare`, not
       `npm install`.
-- [ ] `yare check`, for type-checking without emitting anything.
 
 ## Runtime
 
