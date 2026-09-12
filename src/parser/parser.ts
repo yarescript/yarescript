@@ -499,6 +499,14 @@ export class Parser {
   }
 }
 
+/** Parse a single struct declaration, which is what the linker slices out. */
+export function parseStruct(source: string, fileName = "<source>"): N.StructDecl {
+  const program = parse(source, fileName);
+  const decl = program.body.find((d): d is N.StructDecl => d.kind === "StructDecl");
+  if (!decl) throw new ParseError(`No struct found in ${fileName}`, 1, 1);
+  return decl;
+}
+
 export function parse(source: string, fileName = "<source>"): N.Program {
   const tokens = tokenize(source, fileName);
   return new Parser(tokens, fileName).parseProgram();

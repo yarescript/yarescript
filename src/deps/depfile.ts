@@ -4,6 +4,7 @@ import * as path from "path";
 import { parse } from "../parser/parser";
 import * as N from "../ast/nodes";
 import { typeSpelling } from "../ast/nodes";
+import { ModuleError } from "../modules/resolve";
 
 /**
  * A `.yare.dep` file: an object file, but for WebAssembly.
@@ -28,6 +29,13 @@ export interface DepFunction {
   endLine: number;
 }
 
+/** A type the module declares. Types travel with the functions that use them. */
+export interface DepStruct {
+  name: string;
+  startLine: number;
+  endLine: number;
+}
+
 export interface DepFile {
   magic: string;
   version: number;
@@ -37,6 +45,8 @@ export interface DepFile {
   sourceHash: string;
   source: string;
   functions: DepFunction[];
+  /** absent in dep files written before modules could declare types */
+  structs?: DepStruct[];
 }
 
 export function hashSource(source: string): string {
@@ -52,9 +62,22 @@ export function buildDepFile(
   const program = parse(source, `${moduleName}.ys`);
   const lines = source.split("\n");
   const functions: DepFunction[] = [];
+  const structs: DepStruct[] = [];
 
   for (const decl of program.body) {
+    if (decl.kind === "StructDecl") {
+      structs.push({ name: decl.name, startLine: decl.line, endLine: decl.endLine });
+      continue;
+    }
     if (decl.kind !== "FunctionDecl") continue;
+    // One name per function, because a dep file is an index by name and a
+    // second definition would silently vanish from it. Overloading needs a
+    // story of its own; see ROADMAP.md.
+    if (functions.some((fn) => fn.name === decl.name)) {
+      throw new ModuleError(
+        `${moduleName}.ys defines '${decl.name}' twice. A module cannot overload, so give one of them a different name.`
+      );
+    }
     functions.push({
       name: decl.name,
       params: decl.params.map((p) => ({ type: typeSpelling(p.paramType), name: p.name })),
@@ -73,6 +96,7 @@ export function buildDepFile(
     sourceHash: hashSource(source),
     source: lines.join("\n"),
     functions,
+    structs,
   };
 }
 
@@ -101,6 +125,13 @@ export function functionSource(dep: DepFile, name: string): string | null {
   const fn = dep.functions.find((f) => f.name === name);
   if (!fn) return null;
   return dep.source.split("\n").slice(fn.startLine - 1, fn.endLine).join("\n");
+}
+
+/** The source text of a single struct, sliced out of the dep file. */
+export function structSource(dep: DepFile, name: string): string | null {
+  const found = (dep.structs ?? []).find((st) => st.name === name);
+  if (!found) return null;
+  return dep.source.split("\n").slice(found.startLine - 1, found.endLine).join("\n");
 }
 
 /** Parse a sliced function back into an AST node. */

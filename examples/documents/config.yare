@@ -1,0 +1,8 @@
+{
+  "name": "documents",
+  "version": "0.1.0",
+  "entry": "src/main.ys",
+  "outDir": ".yare",
+  "target": "wasm",
+  "libs": {}
+}

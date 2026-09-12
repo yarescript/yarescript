@@ -59,6 +59,28 @@ test("string equality compares bytes, not pointers", async () => {
   assert.deepStrictEqual(logs, ["true", "true", "false", "true"]);
 });
 
+test("&& and || short-circuit, so a guard can protect an index", async () => {
+  const { logs } = await compileAndRun(`
+    public function: void main() {
+      let: string s = "ab";
+      let: int i = 2;
+      // the right side must not run: s[2] is out of bounds
+      if (i < s.length && s[i] == (97 -> char)) {
+        console.println("matched");
+      } else {
+        console.println("guarded");
+      }
+      let: bool yes = true;
+      let: bool no = false;
+      console.println(yes && no);
+      console.println(yes || no);
+      console.println(no || yes);
+      console.println(no && yes);
+    }
+  `);
+  assert.deepStrictEqual(logs, ["guarded", "false", "true", "true", "false"]);
+});
+
 test("strings order by code point, not by vibes", async () => {
   const { logs } = await compileAndRun(`
     public function: void main() {

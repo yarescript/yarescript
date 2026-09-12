@@ -76,6 +76,11 @@ Working right now:
   room
 - A standard library you import with `@modules.import("str")`, linked function
   by function into `.yare/dep/build/*.yare.dep`
+- Real document parsers: `json.parse`, `toml.parse`, and `xml.parse` hand you
+  structs you walk with `find`, `count`, and `child`, and a broken document
+  comes back as a value you can ask about instead of a crash
+- `&&` and `||` short-circuit, so `i < s.length && s[i] == (97 -> char)` guards
+  the index it is guarding
 - Arrays of anything: `int[]`, `string[]`, `u8[]`, `int[][]`, built with
   `[1, 2, 3]` or `new int[n]`, indexed with a bounds check
 - Structs you declare with `struct Point { int x; int y; }`, build with
@@ -94,9 +99,8 @@ Working right now:
 
 Still to come:
 
-- Generics, a garbage collector, real json/xml/toml documents, source maps, an
-  editor extension, and a package registry for "libs". See
-  [ROADMAP.md](./ROADMAP.md).
+- Generics, a garbage collector, source maps, an editor extension, and a
+  package registry for "libs". See [ROADMAP.md](./ROADMAP.md).
 - yarescript is not published to npm yet, so this is pre-release. When it ships,
   you will be able to install it with `npm install -g yarescript`.
 
@@ -181,6 +185,25 @@ of the module they came from, so a build can be reproduced later.
 pull in WebAssembly-compiled dependencies without any of that landing in your
 loader as JavaScript.
 
+## Reading documents
+
+```
+@modules.import("json");
+
+public function: void main() {
+    let: JsonValue doc = json.parse("{\"name\":\"yare\",\"tags\":[\"a\",\"b\"]}");
+    console.println(json.ok(doc));                            // true
+    console.println(json.stringOf(json.find(doc, "name")));   // yare
+    console.println(json.count(json.find(doc, "tags")));      // 2
+}
+```
+
+`toml.parse` gives you a flat list of entries with the section each one came
+from, and `xml.parse` gives you a tree of elements, attributes, and text. Both
+report a malformed document through `ok` and `errorOf` rather than trapping, so
+a bad config file is a value your program can handle. `examples/documents`
+reads all three in one program.
+
 ## The language, briefly
 
 Full grammar and semantics live in [`docs/LANGUAGE.md`](./docs/LANGUAGE.md).
@@ -248,7 +271,7 @@ public function: void main() {
                                 JavaScript there is
      |
      v
-  CLI            src/cli        yare init|build|run, config.yare
+  CLI            src/cli        yare init|check|build|run, config.yare
                                 plus yare fmt (src/fmt) and
                                 yare test (src/test-runner)
 ```

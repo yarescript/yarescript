@@ -1,0 +1,373 @@
+// The xml module: elements, attributes, text, and nested children, which is
+// enough to read a feed, a config file, or a SOAP envelope you did not choose.
+// Prologs and comments are skipped. Entities are not decoded yet; see
+// ROADMAP.md.
+//
+// A document is a tree of Nodes. kind is 0 for an element, 1 for a run of
+// text, and 2 for an error, so a malformed document is a value you can ask
+// about rather than a trap you fall into.
+
+struct XmlAttr {
+    string name;
+    string value;
+}
+
+struct XmlNode {
+    int kind;
+    string name;
+    string text;
+    XmlAttr[] attrs;
+    XmlNode[] children;
+}
+
+struct XmlDoc {
+    XmlNode root;
+    string problem;
+}
+
+struct XmlCx {
+    string src;
+    int pos;
+}
+
+public function: XmlDoc parse(string text) {
+    let: XmlCx c = XmlCx(text, 0);
+    skipNoise(c);
+    if (!starts(c, 60)) {
+        return XmlDoc(errNode("there is no element to read"), "expected an element");
+    }
+    let: XmlNode root = parseElement(c);
+    skipNoise(c);
+    return XmlDoc(root, firstProblem(root));
+}
+
+public function: bool ok(XmlDoc doc) {
+    return doc.problem.length == 0;
+}
+
+public function: string errorOf(XmlDoc doc) {
+    return doc.problem;
+}
+
+public function: XmlNode root(XmlDoc doc) {
+    return doc.root;
+}
+
+public function: string name(XmlNode node) {
+    return node.name;
+}
+
+public function: bool isElement(XmlNode node) {
+    return node.kind == 0;
+}
+
+public function: int childCount(XmlNode node) {
+    return node.children.length;
+}
+
+public function: XmlNode child(XmlNode node, int i) {
+    if (i < 0 || i >= node.children.length) {
+        return errNode("there is no child at that index");
+    }
+    return node.children[i];
+}
+
+public function: bool has(XmlNode node, string childName) {
+    let: int i = 0;
+    while (i < node.children.length) {
+        let: XmlNode kid = node.children[i];
+        if (kid.kind == 0 && kid.name == childName) {
+            return true;
+        }
+        i++;
+    }
+    return false;
+}
+
+public function: XmlNode find(XmlNode node, string childName) {
+    let: int i = 0;
+    while (i < node.children.length) {
+        let: XmlNode kid = node.children[i];
+        if (kid.kind == 0 && kid.name == childName) {
+            return kid;
+        }
+        i++;
+    }
+    return errNode("no element called " + childName);
+}
+
+public function: int attrCount(XmlNode node) {
+    return node.attrs.length;
+}
+
+public function: string attr(XmlNode node, string attrName) {
+    let: int i = 0;
+    while (i < node.attrs.length) {
+        if (node.attrs[i].name == attrName) {
+            return node.attrs[i].value;
+        }
+        i++;
+    }
+    return "";
+}
+
+// The text directly inside this element, with text children joined. For
+// <to>Tove</to> that is "Tove".
+public function: string textOf(XmlNode node) {
+    let: string out = node.text;
+    let: int i = 0;
+    while (i < node.children.length) {
+        out = out + node.children[i].text;
+        i++;
+    }
+    return out;
+}
+
+public function: string kindName(XmlNode node) {
+    if (node.kind == 0) {
+        return "element";
+    }
+    if (node.kind == 1) {
+        return "text";
+    }
+    return "error";
+}
+
+// The first thing that went wrong anywhere in the tree, or "" when nothing did.
+private function: string firstProblem(XmlNode node) {
+    if (node.kind == 2) {
+        return node.text;
+    }
+    let: int i = 0;
+    while (i < node.children.length) {
+        let: string problem = firstProblem(node.children[i]);
+        if (problem.length > 0) {
+            return problem;
+        }
+        i++;
+    }
+    return "";
+}
+
+// ---- the parser ----
+
+private function: XmlNode errNode(string problem) {
+    return XmlNode(2, "", problem, new XmlAttr[0], new XmlNode[0]);
+}
+
+private function: XmlNode leaf(int kind, string name) {
+    return XmlNode(kind, name, "", new XmlAttr[0], new XmlNode[0]);
+}
+
+private function: XmlNode withChild(XmlNode node, XmlNode kid) {
+    let: int n = node.children.length;
+    let: XmlNode[] grown = new XmlNode[n + 1];
+    let: int i = 0;
+    while (i < n) {
+        grown[i] = node.children[i];
+        i++;
+    }
+    grown[n] = kid;
+    node.children = grown;
+    return node;
+}
+
+private function: XmlNode withAttr(XmlNode node, XmlAttr a) {
+    let: int n = node.attrs.length;
+    let: XmlAttr[] grown = new XmlAttr[n + 1];
+    let: int i = 0;
+    while (i < n) {
+        grown[i] = node.attrs[i];
+        i++;
+    }
+    grown[n] = a;
+    node.attrs = grown;
+    return node;
+}
+
+private function: bool starts(XmlCx c, int code) {
+    return c.pos < c.src.length && c.src[c.pos] -> int == code;
+}
+
+private function: void skipNoise(XmlCx c) {
+    while (c.pos < c.src.length) {
+        let: int code = c.src[c.pos] -> int;
+        if (code == 32 || code == 9 || code == 10 || code == 13) {
+            c.pos++;
+            continue;
+        }
+        if (startsAt(c, "<!--")) {
+            c.pos = c.pos + 4;
+            c.pos = findStr(c, "-->", c.pos);
+            continue;
+        }
+        if (startsAt(c, "<?")) {
+            c.pos = c.pos + 2;
+            c.pos = findStr(c, "?>", c.pos);
+            continue;
+        }
+        return;
+    }
+}
+
+// Returns the index just past the needle, or the end of the haystack.
+private function: int findStr(XmlCx c, string needle, int start) {
+    let: int i = start;
+    while (i + needle.length <= c.src.length) {
+        if (slice(c.src, i, i + needle.length) == needle) {
+            return i + needle.length;
+        }
+        i++;
+    }
+    return c.src.length;
+}
+
+private function: bool startsAt(XmlCx c, string needle) {
+    if (c.pos + needle.length > c.src.length) {
+        return false;
+    }
+    return slice(c.src, c.pos, c.pos + needle.length) == needle;
+}
+
+private function: XmlNode parseElement(XmlCx c) {
+    // c.pos is on the '<'
+    c.pos++;
+    let: string tag = readName(c);
+    if (tag.length == 0) {
+        return errNode("an element with no name");
+    }
+    let: XmlNode node = leaf(0, tag);
+    // attributes, until '>' or '/>'
+    while (c.pos < c.src.length) {
+        skipNoise(c);
+        if (startsAt(c, "/>")) {
+            c.pos = c.pos + 2;
+            return node;
+        }
+        if (starts(c, 62)) {
+            c.pos++;
+            node.children = parseChildren(c, tag);
+            return node;
+        }
+        let: string attrName = readName(c);
+        if (attrName.length == 0) {
+            return errNode("a malformed attribute on " + tag);
+        }
+        skipNoise(c);
+        if (!starts(c, 61)) {
+            return errNode("an attribute with no value on " + tag);
+        }
+        c.pos++;
+        skipNoise(c);
+        node = withAttr(node, XmlAttr(attrName, readQuoted(c)));
+    }
+    return errNode("an element that never closes: " + tag);
+}
+
+private function: XmlNode[] parseChildren(XmlCx c, string tag) {
+    let: XmlNode[] kids = new XmlNode[0];
+    while (c.pos < c.src.length) {
+        if (startsAt(c, "<!--")) {
+            c.pos = findStr(c, "-->", c.pos + 4);
+            continue;
+        }
+        if (startsAt(c, "</")) {
+            c.pos = c.pos + 2;
+            let: string closing = readName(c);
+            c.pos = findStr(c, ">", c.pos);
+            if (closing != tag) {
+                return push(kids, errNode(tag + " was closed by " + closing));
+            }
+            return kids;
+        }
+        if (starts(c, 60)) {
+            kids = push(kids, parseElement(c));
+            continue;
+        }
+        // a run of text, up to the next tag
+        let: int start = c.pos;
+        while (c.pos < c.src.length && c.src[c.pos] -> int != 60) {
+            c.pos++;
+        }
+        let: string run = trim(slice(c.src, start, c.pos));
+        if (run.length > 0) {
+            let: XmlNode textNode = leaf(1, "");
+            textNode.text = run;
+            kids = push(kids, textNode);
+        }
+    }
+    return kids;
+}
+
+private function: XmlNode[] push(XmlNode[] kids, XmlNode kid) {
+    let: int n = kids.length;
+    let: XmlNode[] grown = new XmlNode[n + 1];
+    let: int i = 0;
+    while (i < n) {
+        grown[i] = kids[i];
+        i++;
+    }
+    grown[n] = kid;
+    return grown;
+}
+
+private function: string readName(XmlCx c) {
+    let: int start = c.pos;
+    while (c.pos < c.src.length && isNameChar(c.src[c.pos] -> int)) {
+        c.pos++;
+    }
+    return slice(c.src, start, c.pos);
+}
+
+private function: bool isNameChar(int code) {
+    return (code >= 65 && code <= 90)
+        || (code >= 97 && code <= 122)
+        || (code >= 48 && code <= 57)
+        || code == 95 || code == 45 || code == 46 || code == 58;
+}
+
+private function: string readQuoted(XmlCx c) {
+    if (c.pos >= c.src.length) {
+        return "";
+    }
+    let: int quote = c.src[c.pos] -> int;
+    if (quote != 34 && quote != 39) {
+        return "";
+    }
+    c.pos++;
+    let: int start = c.pos;
+    while (c.pos < c.src.length && c.src[c.pos] -> int != quote) {
+        c.pos++;
+    }
+    let: string value = slice(c.src, start, c.pos);
+    if (c.pos < c.src.length) {
+        c.pos++;
+    }
+    return value;
+}
+
+private function: string trim(string s) {
+    let: int start = 0;
+    let: int end = s.length;
+    while (start < end && isSpace(s[start] -> int)) {
+        start++;
+    }
+    while (end > start && isSpace(s[end - 1] -> int)) {
+        end--;
+    }
+    return slice(s, start, end);
+}
+
+private function: bool isSpace(int code) {
+    return code == 32 || code == 9 || code == 13 || code == 10;
+}
+
+private function: string slice(string s, int start, int end) {
+    let: string out = "";
+    let: int i = start;
+    while (i < end && i < s.length) {
+        out = out + s[i];
+        i++;
+    }
+    return out;
+}

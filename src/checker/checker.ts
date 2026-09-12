@@ -221,6 +221,11 @@ export class Checker {
     if (!decl.fields.length) {
       throw new TypeError_(`Struct '${decl.name}' has no fields. An empty record holds nothing and costs a pointer.`, decl.line);
     }
+    // Registered before its fields are read, so a struct can point at itself:
+    // `struct Node { int value; Node[] next; }` is a list, and a list is a
+    // reasonable thing to want. Every field is a pointer's worth of bytes, so
+    // this cannot make the struct infinitely large.
+    this.structs.set(decl.name, { name: decl.name, fields: [], size: 4 });
     const fields: StructInfo["fields"] = [];
     const seen = new Set<string>();
     let offset = 0;
@@ -414,7 +419,10 @@ export class Checker {
         const t = this.checkExpr(stmt.test, scope);
         if (t !== "bool") throw new TypeError_(`'while' condition must be bool, got '${t}'`, stmt.line);
         this.checkBlock(stmt.body, scope, expectedReturn);
-        return false;
+        // `while (true)` with no way out is the end of the function as far as
+        // "does every path return" is concerned. Parsers are full of them.
+        const spins = stmt.test.kind === "BoolLiteral" && stmt.test.value === true;
+        return spins && !this.breaksOut(stmt.body.body);
       }
       case "ForStmt": {
         const forScope = scope.child();
@@ -746,6 +754,25 @@ export class Checker {
         );
       }
     }
+  }
+
+  /**
+   * Whether a block breaks out of the loop it is sitting in. A `break` inside
+   * a nested loop breaks that one instead, so nested loops are not descended
+   * into, which is the only subtle thing about this function.
+   */
+  private breaksOut(stmts: N.Stmt[]): boolean {
+    for (const stmt of stmts) {
+      if (stmt.kind === "BreakStmt") return true;
+      if (stmt.kind === "Block" && this.breaksOut(stmt.body)) return true;
+      if (stmt.kind === "IfStmt") {
+        if (this.breaksOut(stmt.consequent.body)) return true;
+        const alt = stmt.alternate;
+        if (alt && alt.kind === "IfStmt" && this.breaksOut([alt])) return true;
+        if (alt && alt.kind === "Block" && this.breaksOut(alt.body)) return true;
+      }
+    }
+    return false;
   }
 
   /** Everything a name could plausibly have been meant to be. */

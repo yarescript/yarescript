@@ -1,6 +1,528 @@
-// The json module: building json, not walking it. Turning text back into a
-// value needs a value type that can hold "either a number or a list", and
-// yarescript does not have structs yet. See ROADMAP.md.
+// The json module: real documents, both ways. `parse` turns json text into a
+// tree of JsonValue structs you can walk; `stringify` turns one back into text.
+// The builders (`ofInt`, `ofBool`, `quote`) are still here for when all you
+// wanted was a fragment.
+//
+// A JsonValue is one node. `kind` says what it holds, `children` holds its members
+// or items, and a node that sits in an object carries its `key`. There is no
+// null in yarescript, so "not found" comes back as a JsonValue of kind 6 with the
+// reason in `text`, which is also how a parse error travels.
+
+// kind codes
+//   0 object   1 array   2 string   3 number   4 bool   5 null   6 error
+
+struct JsonValue {
+    int kind;
+    string key;
+    string text;
+    double number;
+    bool flag;
+    JsonValue[] children;
+}
+
+// The parser's place in the input. A struct, so every function it is handed to
+// can move it forward and the caller sees that happen.
+struct JsonCursor {
+    string src;
+    int pos;
+}
+
+// Punctuation this parser looks for, as code points, because yarescript has no
+// char literal: { 123  } 125  [ 91  ] 93  , 44  : 58  " 34  \ 92  - 45  . 46
+// + 43  e 101  E 69  t 116  f 102  n 110  u 117  r 114  b 98
+
+public function: JsonValue parse(string text) {
+    let: JsonCursor c = JsonCursor(text, 0);
+    let: JsonValue v = parseValue(c);
+    if (v.kind == 6) {
+        return v;
+    }
+    skipWs(c);
+    if (c.pos < c.src.length) {
+        return err("the value ends but the document does not");
+    }
+    return v;
+}
+
+public function: bool ok(JsonValue v) {
+    return v.kind != 6;
+}
+
+public function: string errorOf(JsonValue v) {
+    return v.text;
+}
+
+public function: string kindName(JsonValue v) {
+    if (v.kind == 0) {
+        return "object";
+    }
+    if (v.kind == 1) {
+        return "array";
+    }
+    if (v.kind == 2) {
+        return "string";
+    }
+    if (v.kind == 3) {
+        return "number";
+    }
+    if (v.kind == 4) {
+        return "bool";
+    }
+    if (v.kind == 5) {
+        return "null";
+    }
+    return "error";
+}
+
+public function: int count(JsonValue v) {
+    return v.children.length;
+}
+
+public function: JsonValue child(JsonValue v, int i) {
+    if (i < 0 || i >= v.children.length) {
+        return err("there is no child at that index");
+    }
+    return v.children[i];
+}
+
+public function: bool has(JsonValue v, string key) {
+    let: int i = 0;
+    while (i < v.children.length) {
+        if (v.children[i].key == key) {
+            return true;
+        }
+        i++;
+    }
+    return false;
+}
+
+public function: JsonValue find(JsonValue v, string key) {
+    let: int i = 0;
+    while (i < v.children.length) {
+        if (v.children[i].key == key) {
+            return v.children[i];
+        }
+        i++;
+    }
+    return err("no member called " + key);
+}
+
+// Back to text, canonically: no optional whitespace, keys in the order they
+// arrived. Numbers keep the digits they were written with.
+// The four ways you usually want a payload. Reading `.text` and friends
+// directly works too, but these read better at a call site.
+public function: string stringOf(JsonValue v) {
+    return v.text;
+}
+
+public function: double numberOf(JsonValue v) {
+    return v.number;
+}
+
+public function: int intOf(JsonValue v) {
+    return v.number -> int;
+}
+
+public function: bool boolOf(JsonValue v) {
+    return v.flag;
+}
+
+public function: string stringify(JsonValue v) {
+    if (v.kind == 0) {
+        let: string out = "{";
+        let: int i = 0;
+        while (i < v.children.length) {
+            if (i > 0) {
+                out = out + ",";
+            }
+            out = out + quote(v.children[i].key) + ":" + stringify(v.children[i]);
+            i++;
+        }
+        return out + "}";
+    }
+    if (v.kind == 1) {
+        let: string items = "[";
+        let: int j = 0;
+        while (j < v.children.length) {
+            if (j > 0) {
+                items = items + ",";
+            }
+            items = items + stringify(v.children[j]);
+            j++;
+        }
+        return items + "]";
+    }
+    if (v.kind == 2) {
+        return quote(v.text);
+    }
+    if (v.kind == 3) {
+        return v.text;
+    }
+    if (v.kind == 4) {
+        return ofBool(v.flag);
+    }
+    if (v.kind == 5) {
+        return "null";
+    }
+    return "null";
+}
+
+// ---- the parser ----
+
+private function: JsonValue err(string message) {
+    return JsonValue(6, "", message, 0.0, false, new JsonValue[0]);
+}
+
+private function: JsonValue leaf(int kind, string text) {
+    return JsonValue(kind, "", text, 0.0, false, new JsonValue[0]);
+}
+
+private function: JsonValue withChild(JsonValue parent, JsonValue kid) {
+    // Arrays do not grow on their own, so growing one means making a slightly
+    // bigger one and moving in. Quadratic, and fine for a document.
+    let: int n = parent.children.length;
+    let: JsonValue[] grown = new JsonValue[n + 1];
+    let: int i = 0;
+    while (i < n) {
+        grown[i] = parent.children[i];
+        i++;
+    }
+    grown[n] = kid;
+    parent.children = grown;
+    return parent;
+}
+
+private function: void skipWs(JsonCursor c) {
+    while (c.pos < c.src.length) {
+        let: int ch = c.src[c.pos] -> int;
+        if (ch == 32 || ch == 9 || ch == 10 || ch == 13) {
+            c.pos++;
+        } else {
+            return;
+        }
+    }
+}
+
+private function: bool starts(JsonCursor c, string word) {
+    if (c.pos + word.length > c.src.length) {
+        return false;
+    }
+    let: int i = 0;
+    while (i < word.length) {
+        if (c.src[c.pos + i] != word[i]) {
+            return false;
+        }
+        i++;
+    }
+    return true;
+}
+
+private function: JsonValue parseValue(JsonCursor c) {
+    skipWs(c);
+    if (c.pos >= c.src.length) {
+        return err("the document ends before a value does");
+    }
+    let: int ch = c.src[c.pos] -> int;
+    if (ch == 123) {
+        return parseObject(c);
+    }
+    if (ch == 91) {
+        return parseArray(c);
+    }
+    if (ch == 34) {
+        let: JsonValue s = leaf(2, parseString(c));
+        return s;
+    }
+    if (ch == 116 || ch == 102 || ch == 110) {
+        return parseLiteral(c);
+    }
+    return parseNumber(c);
+}
+
+private function: JsonValue parseObject(JsonCursor c) {
+    c.pos++;
+    let: JsonValue obj = JsonValue(0, "", "", 0.0, false, new JsonValue[0]);
+    skipWs(c);
+    if (c.pos < c.src.length && c.src[c.pos] -> int == 125) {
+        c.pos++;
+        return obj;
+    }
+    while (true) {
+        skipWs(c);
+        if (c.pos >= c.src.length) {
+            return err("an object ends before its last member does");
+        }
+        if (c.src[c.pos] -> int != 34) {
+            return err("an object member starts with a quoted key");
+        }
+        let: string key = parseString(c);
+        skipWs(c);
+        if (c.pos >= c.src.length || c.src[c.pos] -> int != 58) {
+            return err("expected a colon after an object key");
+        }
+        c.pos++;
+        let: JsonValue kid = parseValue(c);
+        if (kid.kind == 6) {
+            return kid;
+        }
+        kid.key = key;
+        obj = withChild(obj, kid);
+        skipWs(c);
+        if (c.pos >= c.src.length) {
+            return err("an object ends before its last member does");
+        }
+        let: int ch = c.src[c.pos] -> int;
+        if (ch == 44) {
+            c.pos++;
+            continue;
+        }
+        if (ch == 125) {
+            c.pos++;
+            return obj;
+        }
+        return err("expected a comma or a closing brace in an object");
+    }
+}
+
+private function: JsonValue parseArray(JsonCursor c) {
+    c.pos++;
+    let: JsonValue arr = JsonValue(1, "", "", 0.0, false, new JsonValue[0]);
+    skipWs(c);
+    if (c.pos < c.src.length && c.src[c.pos] -> int == 93) {
+        c.pos++;
+        return arr;
+    }
+    while (true) {
+        let: JsonValue item = parseValue(c);
+        if (item.kind == 6) {
+            return item;
+        }
+        arr = withChild(arr, item);
+        skipWs(c);
+        if (c.pos >= c.src.length) {
+            return err("an array ends before its last item does");
+        }
+        let: int ch = c.src[c.pos] -> int;
+        if (ch == 44) {
+            c.pos++;
+            continue;
+        }
+        if (ch == 93) {
+            c.pos++;
+            return arr;
+        }
+        return err("expected a comma or a closing bracket in an array");
+    }
+}
+
+private function: string parseString(JsonCursor c) {
+    c.pos++;
+    let: string out = "";
+    while (c.pos < c.src.length) {
+        let: char ch = c.src[c.pos];
+        let: int code = ch -> int;
+        if (code == 34) {
+            c.pos++;
+            return out;
+        }
+        if (code == 92) {
+            c.pos++;
+            if (c.pos >= c.src.length) {
+                return out;
+            }
+            let: int esc = c.src[c.pos] -> int;
+            if (esc == 110) {
+                out = out + (10 -> char);
+            } else if (esc == 116) {
+                out = out + (9 -> char);
+            } else if (esc == 114) {
+                out = out + (13 -> char);
+            } else if (esc == 98) {
+                out = out + (8 -> char);
+            } else if (esc == 102) {
+                out = out + (12 -> char);
+            } else if (esc == 117) {
+                // \uXXXX: four hex digits, one code unit
+                let: int unit = 0;
+                let: int d = 0;
+                while (d < 4 && c.pos + 1 + d < c.src.length) {
+                    unit = unit * 16 + hexDigit(c.src[c.pos + 1 + d]);
+                    d++;
+                }
+                out = out + (unit -> char);
+                c.pos = c.pos + 4;
+            } else {
+                out = out + (esc -> char);
+            }
+            c.pos++;
+            continue;
+        }
+        out = out + ch;
+        c.pos++;
+    }
+    return out;
+}
+
+private function: int hexDigit(char ch) {
+    let: int code = ch -> int;
+    if (code >= 48 && code <= 57) {
+        return code - 48;
+    }
+    if (code >= 97 && code <= 102) {
+        return code - 87;
+    }
+    if (code >= 65 && code <= 70) {
+        return code - 55;
+    }
+    return 0;
+}
+
+private function: JsonValue parseLiteral(JsonCursor c) {
+    if (starts(c, "true")) {
+        c.pos = c.pos + 4;
+        return JsonValue(4, "", "true", 0.0, true, new JsonValue[0]);
+    }
+    if (starts(c, "false")) {
+        c.pos = c.pos + 5;
+        return JsonValue(4, "", "false", 0.0, false, new JsonValue[0]);
+    }
+    if (starts(c, "null")) {
+        c.pos = c.pos + 4;
+        return leaf(5, "null");
+    }
+    return err("expected a value");
+}
+
+private function: JsonValue parseNumber(JsonCursor c) {
+    let: int start = c.pos;
+    if (c.pos < c.src.length && c.src[c.pos] -> int == 45) {
+        c.pos++;
+    }
+    let: int digits = 0;
+    while (c.pos < c.src.length) {
+        let: int code = c.src[c.pos] -> int;
+        if (code >= 48 && code <= 57) {
+            digits++;
+            c.pos++;
+            continue;
+        }
+        break;
+    }
+    if (digits == 0) {
+        return err("a number needs at least one digit");
+    }
+    if (c.pos < c.src.length && c.src[c.pos] -> int == 46) {
+        c.pos++;
+        while (c.pos < c.src.length) {
+            let: int code = c.src[c.pos] -> int;
+            if (code >= 48 && code <= 57) {
+                c.pos++;
+                continue;
+            }
+            break;
+        }
+    }
+    if (c.pos < c.src.length) {
+        let: int code = c.src[c.pos] -> int;
+        if (code == 101 || code == 69) {
+            c.pos++;
+            if (c.pos < c.src.length) {
+                let: int sign = c.src[c.pos] -> int;
+                if (sign == 43 || sign == 45) {
+                    c.pos++;
+                }
+            }
+            while (c.pos < c.src.length) {
+                let: int code2 = c.src[c.pos] -> int;
+                if (code2 >= 48 && code2 <= 57) {
+                    c.pos++;
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    let: string raw = slice(c.src, start, c.pos);
+    return JsonValue(3, "", raw, toDouble(raw), false, new JsonValue[0]);
+}
+
+// ---- small helpers the parser needs and does not get from anywhere else ----
+
+private function: string slice(string s, int start, int end) {
+    let: string out = "";
+    let: int i = start;
+    while (i < end && i < s.length) {
+        out = out + s[i];
+        i++;
+    }
+    return out;
+}
+
+private function: double toDouble(string s) {
+    let: double value = 0.0;
+    let: bool negative = false;
+    let: int i = 0;
+    if (i < s.length && s[i] -> int == 45) {
+        negative = true;
+        i++;
+    }
+    while (i < s.length) {
+        let: int code = s[i] -> int;
+        if (code == 46 || code == 101 || code == 69) {
+            break;
+        }
+        value = value * 10.0 + (code - 48) -> double;
+        i++;
+    }
+    if (i < s.length && s[i] -> int == 46) {
+        i++;
+        let: double place = 0.1;
+        while (i < s.length) {
+            let: int code = s[i] -> int;
+            if (code == 101 || code == 69) {
+                break;
+            }
+            value = value + (code - 48) -> double * place;
+            place = place / 10.0;
+            i++;
+        }
+    }
+    if (i < s.length) {
+        let: int code = s[i] -> int;
+        if (code == 101 || code == 69) {
+            i++;
+            let: bool expNegative = false;
+            if (i < s.length && s[i] -> int == 45) {
+                expNegative = true;
+                i++;
+            } else if (i < s.length && s[i] -> int == 43) {
+                i++;
+            }
+            let: int exponent = 0;
+            while (i < s.length) {
+                exponent = exponent * 10 + (s[i] -> int) - 48;
+                i++;
+            }
+            let: double factor = 1.0;
+            let: int k = 0;
+            while (k < exponent) {
+                factor = factor * 10.0;
+                k++;
+            }
+            if (expNegative) {
+                value = value / factor;
+            } else {
+                value = value * factor;
+            }
+        }
+    }
+    if (negative) {
+        return 0.0 - value;
+    }
+    return value;
+}
+
+// ---- the builders, still here for fragments ----
 
 public function: string ofInt(int n) {
     if (n == 0) {

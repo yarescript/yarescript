@@ -42,15 +42,20 @@ These used to be on this list and are now in the compiler, documented in
 - Ordering comparisons on strings, in code point order, which is the collation
   answer this project is willing to defend: predictable and locale-free.
 - `yare check`, which type-checks a project and emits nothing at all.
+- Real json, xml, and toml documents. `json.parse` hands you a tree of
+  `JsonValue`, `toml.parse` a flat list of `TomlEntry`, `xml.parse` a tree of
+  `XmlNode`, and every one of them reports a malformed document through `ok`
+  and `errorOf` instead of trapping.
+- `&&` and `||` short-circuit. They used to compile to `i32.and` and `i32.or`,
+  which evaluate both sides, so the guard in `i < s.length && s[i] == x` did
+  not guard anything.
+- Structs can mention themselves, so `struct XmlNode { XmlNode[] children; }`
+  is a legal declaration, and a module's structs travel with its functions
+  through the linker.
 - Apache License 2.0.
 
 ## Near-term (language completeness)
 
-- [ ] Real json, xml, and toml documents. The `json` module can build json
-      today (`ofInt`, `ofBool`, `quote`). Reading one back now has what it
-      needs: structs can hold "a number or a list or a map" and arrays can hold
-      the list. What is missing is the parsers and a `json.Value` struct to
-      hand you.
 - [ ] A minimal generics story, now that there are types worth being generic
       over.
 - [ ] `console.println` for a whole array or struct, so you can look at one

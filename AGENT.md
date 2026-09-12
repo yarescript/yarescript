@@ -31,7 +31,8 @@ Compiler bugs go to Arunkumar. Broken releases, examples, and docs go to Surya.
 npm install
 npm run build                          # tsc, src/ -> dist/
 npm test                               # node --test dist/test/*.test.js
-node dist/cli/index.js build           # from inside an examples/ project
+node dist/cli/index.js check           # from inside an examples/ project
+node dist/cli/index.js build
 node dist/cli/index.js run
 node dist/cli/index.js test
 node dist/cli/index.js fmt --check
@@ -40,9 +41,10 @@ node dist/cli/index.js fmt --check
 `npm test` runs the compiled JavaScript in `dist/`, so a stale `dist/` means
 stale results. Run `npm run build` first, always.
 
-There are 42 tests and they are the real thing: they compile yarescript source,
-instantiate the WebAssembly, execute it, and assert on what the program printed.
-Do not replace that with a test that only checks "it compiled".
+The suite is the real thing: every test compiles yarescript source,
+instantiates the WebAssembly, runs it, and asserts on what the program printed.
+`npm test` prints the count, so read it rather than trusting memory. Do not
+replace that with a test that only checks "it compiled".
 
 ## Layout
 
@@ -56,12 +58,13 @@ src/runtime/      loader-template.ts         generates loader.js (the only JS)
 src/modules/      resolve.ts                 import resolution, .ys file walking
 src/deps/         depfile.ts, link.ts        .yare.dep files, selective linking
 src/diagnostics/  suggest.ts                 "did you mean?" for every error
-stdlib/           str.ys, math.ys, json.ys   modules for @modules.import
+stdlib/           str, math, json, toml, xml  modules for @modules.import
 src/fmt/          formatter.ts               `yare fmt`
 src/test-runner/  runner.ts                  `yare test`
 src/cli/          config.ts, index.ts        config.yare and the yare command
 src/test/         *.test.ts                  the test suite
-examples/         hello-world, kitchen-sink, modules, stdlib, records
+examples/         hello-world, kitchen-sink, modules, stdlib, records,
+                  documents
 ```
 
 ## Adding a language feature
@@ -160,23 +163,10 @@ They are also the fastest way to find out a language feature is missing.
   yet, so a program that concatenates in a loop grows memory until the host
   says no.
 
-## Style
-
-- Comments should be funny and correct, in that order. A joke that misdescribes
-  the code is worse than no joke, because somebody will believe it.
-- Docs are plain ASCII: no emoji, no en or em dashes, no arrow glyphs. Write
-  `->` and use plain words.
-- Docs talk to the reader. "You compile with `yare build`", not "I decided to
-  build it this way".
-- Nothing in this repo mentions how any of it was written. No tool
-  attributions, no generation notes, no meta-commentary.
-- Commit messages are lazy and short. `docs cleanup` is a complete commit
-  message.
-
 ## Not implemented yet
 
 Generics, a garbage collector, source maps, a WASI target, an editor
-extension, a real registry behind `libs` in `config.yare`, parsing json and xml
-and toml documents rather than building them, and publishing to npm.
+extension, a real registry behind `libs` in `config.yare`, unicode escapes and
+entity decoding in the document modules, and publishing to npm.
 The current list lives in `ROADMAP.md`, which is the file to update when any of
 that changes.

@@ -309,11 +309,15 @@ public function: void main() {
 
 These are available without any import.
 
-- `console.println(x)` for every primitive type. The type checker resolves the
-  call to a type-specific WebAssembly host import (`console_println_string`,
-  `console_println_int`, `console_println_long`, `console_println_float`,
-  `console_println_double`, `console_println_bool`, `console_println_char`) and the
-  generated loader supplies the implementation. `char` prints as a letter.
+- `console.println(x)` for every type that holds a value: all thirteen of them.
+  The type checker resolves the call to a type-specific WebAssembly host import
+  (`console_println_string`, `console_println_bool`, `console_println_char`,
+  `console_println_int`, `console_println_uint`, `console_println_long`,
+  `console_println_ulong`, `console_println_float`, `console_println_double`) and
+  the generated loader supplies the implementation. `char` prints as a letter,
+  and the unsigned printers print unsigned, so a `u32` holding `4294967295`
+  does not come out looking negative. Arrays and structs have no printer; walk
+  them and print what is inside.
 - `assert(cond: bool)` does nothing when `cond` is true and traps the module
   when it is false. This is how tests fail.
 
@@ -329,7 +333,8 @@ fixed set of well-known imports the loader always provides.
 
 A directive is an instruction to the build rather than to the program, and it
 sits at the top level with the imports. The bundled modules are `str`, `math`,
-and `json`; the list is whatever is in the compiler's `stdlib/` directory.
+`json`, `toml`, and `xml`; the list is whatever is in the compiler's
+`stdlib/` directory.
 
 Once imported, a module's functions are called with the module name in front:
 
@@ -349,6 +354,45 @@ Only the functions you actually call are linked into your module, and a call to
 one module function that calls another pulls the second one in too. Import a
 module and never use it and it costs you nothing. Unknown modules and unknown
 functions are reported with a suggestion.
+
+### Documents
+
+Three of those modules read documents. Each hands you a struct tree, each
+answers `ok` and `errorOf` about what it was given, and none of them traps on
+input they do not like.
+
+```
+@modules.import("json");
+@modules.import("toml");
+@modules.import("xml");
+
+public function: void main() {
+    let: JsonValue doc = json.parse("{\"n\":42,\"tags\":[\"a\",\"b\"]}");
+    console.println(json.intOf(json.find(doc, "n")));            // 42
+    console.println(json.count(json.find(doc, "tags")));         // 2
+    console.println(json.stringify(doc));   // {"n":42,"tags":["a","b"]}
+
+    let: TomlDoc config = toml.parse("[server]\nport = 8080\n");
+    console.println(toml.intOf(config, "server", "port"));       // 8080
+
+    let: XmlDoc note = xml.parse("<note priority=\"1\"><to>Tove</to></note>");
+    console.println(xml.attr(xml.root(note), "priority"));       // 1
+    console.println(xml.textOf(xml.find(xml.root(note), "to")));  // Tove
+}
+```
+
+`json` kinds are object, array, string, number, bool, null, and error, and
+`kindName` spells them out. `toml` keeps entries flat with the section each one
+came from, and `has` tells you whether a key is there before you read it.
+`xml` skips prologs and comments, keeps attributes in order, and turns a run of
+text into a text node.
+
+Struct names carry the module in front of them (`JsonValue`, `TomlDoc`,
+`XmlNode`) because two modules that both declared `Doc` would collide once
+linked into one WebAssembly module.
+
+Not covered yet: unicode escapes and entity decoding, toml inline tables and
+array values, and xml namespaces.
 
 ## Modules & imports
 

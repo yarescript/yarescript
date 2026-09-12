@@ -1,0 +1,22 @@
+@modules.import("json");
+
+@modules.import("toml");
+
+@modules.import("xml");
+
+public function: void main() {
+    // A config file, a payload, and a note, all read in one program.
+    let: TomlDoc config = toml.parse("[server]\nhost = \"localhost\"  # where\nport = 8080\n");
+    console.println(toml.stringOf(config, "server", "host"));
+    console.println(toml.intOf(config, "server", "port"));
+
+    let: JsonValue payload = json.parse("{\"name\":\"yare\",\"tags\":[\"fast\",\"small\"],\"n\":42}");
+    console.println(json.ok(payload));
+    console.println(json.stringOf(json.find(payload, "name")));
+    console.println(json.count(json.find(payload, "tags")));
+    console.println(json.intOf(json.find(payload, "n")));
+
+    let: XmlDoc note = xml.parse("<?xml version=\"1.0\"?><note priority=\"1\"><to>Tove</to></note>");
+    console.println(xml.attr(xml.root(note), "priority"));
+    console.println(xml.textOf(xml.find(xml.root(note), "to")));
+}

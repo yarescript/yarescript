@@ -1,0 +1,274 @@
+// The toml module: real documents, the line-oriented kind. Sections, keys,
+// strings, numbers, and booleans, which is what a config file is made of.
+// Inline tables and array values are not here yet; see ROADMAP.md.
+//
+// A parsed document is a flat list of entries, each remembering the section it
+// came from. "Not found" is an TomlEntry of kind 3 rather than a crash, because a
+// missing config key is a thing programs handle, not a thing they survive.
+
+// kind codes for a value
+//   0 string   1 number   2 bool   3 missing   4 error
+
+struct TomlEntry {
+    string section;
+    string key;
+    int kind;
+    string text;
+    double number;
+    bool flag;
+}
+
+struct TomlDoc {
+    TomlEntry[] entries;
+    string problem;
+}
+
+public function: TomlDoc parse(string text) {
+    let: TomlDoc doc = TomlDoc(new TomlEntry[0], "");
+    let: string section = "";
+    let: int i = 0;
+    while (i < text.length) {
+        let: int start = i;
+        while (i < text.length && text[i] -> int != 10) {
+            i++;
+        }
+        let: string line = trim(slice(text, start, i));
+        if (i < text.length) {
+            i++;
+        }
+        if (line.length == 0) {
+            continue;
+        }
+        if (line[0] -> int == 35) {
+            continue;
+        }
+        if (line[0] -> int == 91) {
+            let: int close = indexOf(line, 93, 0);
+            if (close < 0) {
+                return broken(doc, "a section header has no closing bracket");
+            }
+            section = trim(slice(line, 1, close));
+            continue;
+        }
+        let: int eq = indexOf(line, 61, 0);
+        if (eq < 0) {
+            return broken(doc, "a line is neither a section nor a key = value");
+        }
+        let: string key = unquote(trim(slice(line, 0, eq)));
+        let: string raw = trim(stripComment(slice(line, eq + 1, line.length)));
+        doc = withEntry(doc, entryOf(section, key, raw));
+    }
+    return doc;
+}
+
+public function: bool ok(TomlDoc doc) {
+    return doc.problem.length == 0;
+}
+
+public function: string errorOf(TomlDoc doc) {
+    return doc.problem;
+}
+
+public function: int count(TomlDoc doc) {
+    return doc.entries.length;
+}
+
+public function: TomlEntry entry(TomlDoc doc, int i) {
+    if (i < 0 || i >= doc.entries.length) {
+        return TomlEntry("", "", 4, "there is no entry at that index", 0.0, false);
+    }
+    return doc.entries[i];
+}
+
+public function: bool has(TomlDoc doc, string section, string key) {
+    let: int i = 0;
+    while (i < doc.entries.length) {
+        if (doc.entries[i].section == section && doc.entries[i].key == key) {
+            return true;
+        }
+        i++;
+    }
+    return false;
+}
+
+public function: TomlEntry find(TomlDoc doc, string section, string key) {
+    let: int i = 0;
+    while (i < doc.entries.length) {
+        if (doc.entries[i].section == section && doc.entries[i].key == key) {
+            return doc.entries[i];
+        }
+        i++;
+    }
+    return TomlEntry(section, key, 3, "no such key", 0.0, false);
+}
+
+// The three ways you usually want a value, each with a sensible zero when the
+// key is not there. `has` tells you which case you are in.
+public function: string stringOf(TomlDoc doc, string section, string key) {
+    return find(doc, section, key).text;
+}
+
+public function: int intOf(TomlDoc doc, string section, string key) {
+    return find(doc, section, key).number -> int;
+}
+
+public function: double numberOf(TomlDoc doc, string section, string key) {
+    return find(doc, section, key).number;
+}
+
+public function: bool boolOf(TomlDoc doc, string section, string key) {
+    return find(doc, section, key).flag;
+}
+
+public function: string kindName(TomlEntry e) {
+    if (e.kind == 0) {
+        return "string";
+    }
+    if (e.kind == 1) {
+        return "number";
+    }
+    if (e.kind == 2) {
+        return "bool";
+    }
+    if (e.kind == 3) {
+        return "missing";
+    }
+    return "error";
+}
+
+// ---- the pieces ----
+
+private function: TomlDoc broken(TomlDoc doc, string problem) {
+    doc.problem = problem;
+    return doc;
+}
+
+private function: TomlDoc withEntry(TomlDoc doc, TomlEntry e) {
+    let: int n = doc.entries.length;
+    let: TomlEntry[] grown = new TomlEntry[n + 1];
+    let: int i = 0;
+    while (i < n) {
+        grown[i] = doc.entries[i];
+        i++;
+    }
+    grown[n] = e;
+    doc.entries = grown;
+    return doc;
+}
+
+private function: TomlEntry entryOf(string section, string key, string raw) {
+    if (raw.length == 0) {
+        return TomlEntry(section, key, 4, "a key with no value", 0.0, false);
+    }
+    if (raw[0] -> int == 34 || raw[0] -> int == 39) {
+        return TomlEntry(section, key, 0, unquote(raw), 0.0, false);
+    }
+    if (raw == "true") {
+        return TomlEntry(section, key, 2, raw, 0.0, true);
+    }
+    if (raw == "false") {
+        return TomlEntry(section, key, 2, raw, 0.0, false);
+    }
+    return TomlEntry(section, key, 1, raw, toDouble(raw), false);
+}
+
+// A comment starts at the first # that is not inside a quoted string.
+private function: string stripComment(string s) {
+    let: bool inString = false;
+    let: int i = 0;
+    while (i < s.length) {
+        let: int code = s[i] -> int;
+        if (code == 34 || code == 39) {
+            inString = !inString;
+        }
+        if (code == 35 && !inString) {
+            return slice(s, 0, i);
+        }
+        i++;
+    }
+    return s;
+}
+
+private function: string unquote(string s) {
+    if (s.length < 2) {
+        return s;
+    }
+    let: int first = s[0] -> int;
+    let: int last = s[s.length - 1] -> int;
+    if (first == last && (first == 34 || first == 39)) {
+        return slice(s, 1, s.length - 1);
+    }
+    return s;
+}
+
+private function: string trim(string s) {
+    let: int start = 0;
+    let: int end = s.length;
+    while (start < end && isSpace(s[start] -> int)) {
+        start++;
+    }
+    while (end > start && isSpace(s[end - 1] -> int)) {
+        end--;
+    }
+    return slice(s, start, end);
+}
+
+private function: bool isSpace(int code) {
+    return code == 32 || code == 9 || code == 13 || code == 10;
+}
+
+private function: int indexOf(string s, int code, int start) {
+    let: int i = start;
+    while (i < s.length) {
+        if (s[i] -> int == code) {
+            return i;
+        }
+        i++;
+    }
+    return 0 - 1;
+}
+
+private function: string slice(string s, int start, int end) {
+    let: string out = "";
+    let: int i = start;
+    while (i < end && i < s.length) {
+        out = out + s[i];
+        i++;
+    }
+    return out;
+}
+
+private function: double toDouble(string s) {
+    let: double value = 0.0;
+    let: bool negative = false;
+    let: int i = 0;
+    if (i < s.length && s[i] -> int == 45) {
+        negative = true;
+        i++;
+    }
+    while (i < s.length) {
+        let: int code = s[i] -> int;
+        if (code == 46 || code == 101 || code == 69) {
+            break;
+        }
+        value = value * 10.0 + (code - 48) -> double;
+        i++;
+    }
+    if (i < s.length && s[i] -> int == 46) {
+        i++;
+        let: double place = 0.1;
+        while (i < s.length) {
+            let: int code = s[i] -> int;
+            if (code == 101 || code == 69) {
+                break;
+            }
+            value = value + (code - 48) -> double * place;
+            place = place / 10.0;
+            i++;
+        }
+    }
+    if (negative) {
+        return 0.0 - value;
+    }
+    return value;
+}

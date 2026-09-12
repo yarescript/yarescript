@@ -7,9 +7,11 @@ import {
   buildDepFile,
   functionSource,
   parseFunction,
+  structSource,
   writeDepFile,
   DepFile,
 } from "./depfile";
+import { parseStruct } from "../parser/parser";
 
 export interface LinkedModule {
   name: string;
@@ -98,6 +100,7 @@ export function linkModules(
 
   const modules: LinkedModule[] = [];
   const linked: N.FunctionDecl[] = [];
+  const linkedTypes: N.StructDecl[] = [];
 
   for (const name of imported) {
     const source = fs.readFileSync(path.join(dir, `${name}.ys`), "utf8");
@@ -121,6 +124,13 @@ export function linkModules(
     }
 
     const selected = expand(dep, asked);
+    // Types travel with the functions that mention them. A module's structs
+    // join your program under their own name, so `json.parse` can hand you a
+    // `Value` you are able to declare a variable of.
+    for (const typeName of referencedStructs(dep, selected)) {
+      const decl = parseStruct(structSource(dep, typeName)!, `${name}.ys`);
+      linkedTypes.push(decl);
+    }
     for (const fn of selected) {
       const decl = parseFunction(functionSource(dep, fn)!, `${name}.ys`);
       decl.name = internalName(name, fn);
@@ -157,7 +167,47 @@ export function linkModules(
     body.push(decl);
   }
 
-  return { program: { kind: "Program", body: [...linked, ...body] }, modules };
+  return { program: { kind: "Program", body: [...linkedTypes, ...linked, ...body] }, modules };
+}
+
+/**
+ * Every struct a set of functions depends on, in the order the module declared
+ * them, which is the order they have to be re-declared in: a struct may only
+ * contain types that already exist.
+ */
+function referencedStructs(dep: DepFile, selected: string[]): string[] {
+  const declared = (dep.structs ?? []).map((st) => st.name);
+  const wanted = new Set<string>();
+  const queue: string[] = [];
+  const add = (name: string) => {
+    if (declared.includes(name) && !wanted.has(name)) {
+      wanted.add(name);
+      queue.push(name);
+    }
+  };
+
+  for (const fn of selected) {
+    const src = functionSource(dep, fn);
+    if (!src) continue;
+    const decl = parseFunction(src, `${dep.name}.ys`);
+    add(decl.returnType.name);
+    decl.params.forEach((p) => add(p.paramType.name));
+    walk(decl.body, (node) => {
+      if (node.kind === "VarDecl") add(node.varType.name);
+      else if (node.kind === "CastExpr") add(node.targetType.name);
+      else if (node.kind === "NewArrayExpr") add(node.elemType.name);
+    });
+  }
+
+  // and whatever those structs are built out of
+  while (queue.length) {
+    const name = queue.shift()!;
+    const src = structSource(dep, name);
+    if (!src) continue;
+    for (const field of parseStruct(src, `${dep.name}.ys`).fields) add(field.fieldType.name);
+  }
+
+  return declared.filter((name) => wanted.has(name));
 }
 
 /** A module function, plus the module functions it calls, plus theirs. */

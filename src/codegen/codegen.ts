@@ -206,7 +206,15 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
     const wasmParamType = binaryen.createType(paramTypes.map(wasmType));
     const wasmReturnType = wasmType(N.typeSpelling(decl.returnType));
 
-    mod.addFunction(decl.name, wasmParamType, wasmReturnType, scope.localTypes, body);
+    // A function that returns a value has to end on an instruction that can
+    // produce one. When every path already returned, all that is left at the
+    // end is a loop or a block with nothing to give, and WebAssembly insists
+    // the types line up anyway. `unreachable` is the honest way to say "you
+    // cannot get here", and the optimizer throws it away.
+    const finalBody =
+      wasmReturnType === binaryen.none ? body : blk([body, mod.unreachable()], wasmReturnType);
+
+    mod.addFunction(decl.name, wasmParamType, wasmReturnType, scope.localTypes, finalBody);
 
     if (decl.visibility === "public") {
       mod.addFunctionExport(decl.name, decl.name);
@@ -1180,9 +1188,13 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
       case ">=":
         return bin.ge(lv, rv);
       case "&&":
-        return mod.i32.and(lv, rv);
+        // Short circuit, the way every language you have used does it. `i <
+        // s.length && s[i] == x` is the idiom that guards an index, and an
+        // i32.and would evaluate both sides and trap on the one you were
+        // trying to avoid.
+        return mod.if(lv, rv, mod.i32.const(0));
       case "||":
-        return mod.i32.or(lv, rv);
+        return mod.if(lv, mod.i32.const(1), rv);
       default:
         throw new Error(`codegen: unsupported binary operator '${operator}'`);
     }
