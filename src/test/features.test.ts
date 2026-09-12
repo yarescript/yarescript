@@ -123,6 +123,19 @@ test("cast binds tighter than arithmetic", async () => {
   assert.deepStrictEqual(logs, ["3.5", "3"]);
 });
 
+test("a string cannot be written into", () => {
+  assert.throws(
+    () =>
+      check(parse(`
+      public function: void main() {
+        let: string s = "yare";
+        s[0] = (89 -> char);
+      }
+    `)),
+    (e: Error) => e instanceof TypeError_ && /cannot be written into/.test(e.message)
+  );
+});
+
 test("casting a string is a type error", () => {
   assert.throws(() => {
     check(parse(`

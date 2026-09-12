@@ -187,7 +187,9 @@ Comparison: `== != < > <= >=`. `==`/`!=` work on numbers, `bool`, and
 `string`; the ordering comparisons work on numeric types and on strings, where
 they compare by code point. Arrays and structs do not compare at all.
 
-Logical: `&& ||` (both operands must be `bool`) and unary `!`.
+Logical: `&& ||` (both operands must be `bool`) and unary `!`. Both binary
+logical operators short-circuit, so `i < s.length && s[i] == (97 -> char)`
+never evaluates the index the first half just ruled out.
 
 Assignment: `= += -= *= /=`, and unary `++`/`--` (prefix and postfix). The
 target can be a variable, an array slot, or a struct field, so `xs[i] += 2`
@@ -221,7 +223,9 @@ Concatenation allocates from a bump allocator in linear memory, and the
 module grows its memory as needed. There is no garbage collector yet, so a
 program that builds strings in a long loop keeps every intermediate result
 alive. A `char` concatenates onto a string from either side, so `"a" + c` and `c + "a"`
-both work.
+both work. Writing into one is a compile error: `s[0] = (89 -> char)` reads
+better than it behaves, because other code may be holding a pointer to those
+bytes. Build a new string instead.
 
 Strings also order with `<`, `>`, `<=`, and `>=`. The order is byte order,
 which for UTF-8 is also code point order: `"Z" < "a"` is true and `"apple" <
@@ -300,8 +304,8 @@ public function: void main() {
   stored.
 - A struct variable holds a pointer to the record. Assigning one to another
   shares it rather than copying it, and so does putting it in another struct.
-- A struct may only contain types that already exist, which is what stops one
-  from containing itself.
+- A struct may refer to itself, because what it holds is a pointer: `struct
+  XmlNode { XmlNode[] children; }` is how a document tree is written.
 - Structs are not numbers: they do not compare with `==`, do not take `+`, and
   do not cast.
 

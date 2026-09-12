@@ -169,7 +169,7 @@ pieces the linker needs. Then it links **only what you called**.
 ```
 $ yare build
 Compiled src/main.ys -> .yare/stdlib.wasm
-Module:   str 0.1.0 (2 of 7 functions linked)
+Module:   str 0.1.0 (4 of 7 functions linked)
 Module:   math 0.1.0 (2 of 5 functions linked)
 Lock:     .yare/config-lock.yare
 Exports:  main

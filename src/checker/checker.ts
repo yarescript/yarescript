@@ -824,6 +824,14 @@ export class Checker {
             throw new TypeError_(`Cannot write into const '${base.name}'`, line);
           }
         }
+        if (target.kind === "IndexExpr" && this.checkExpr(target.object, scope) === "string") {
+          // A string is a length and some bytes that other code may be holding
+          // a pointer to, so nobody writes into one. Reading s[i] is fine.
+          throw new TypeError_(
+            `A string cannot be written into. Build a new one with '+' instead.`,
+            line
+          );
+        }
         return this.checkExpr(target, scope);
       }
       default:
