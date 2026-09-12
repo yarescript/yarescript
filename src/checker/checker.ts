@@ -2,10 +2,15 @@ import * as N from "../ast/nodes";
 import {
   INT_RANGE,
   PRIMITIVES,
+  alignOfType,
+  arrayOf,
+  elemTypeOf,
+  isArrayType,
   isAssignable,
   isInteger,
   isNumeric,
-  isValidType,
+  ScalarType,
+  sizeOfType,
   tryWiden,
   YType,
 } from "./types";
@@ -42,6 +47,14 @@ interface FunctionSig {
   params: YType[];
   returnType: YType;
   visibility: N.Visibility;
+}
+
+/** A struct with its layout worked out, so codegen never has to guess. */
+export interface StructInfo {
+  name: string;
+  fields: { name: string; type: YType; offset: number; size: number }[];
+  /** total size in bytes, padding included */
+  size: number;
 }
 
 interface HostFunctionSig {
@@ -122,6 +135,7 @@ class Scope {
 export interface CheckedProgram {
   program: N.Program;
   functions: Map<string, FunctionSig>;
+  structs: Map<string, StructInfo>;
 }
 
 /**
@@ -135,26 +149,21 @@ export interface CheckedProgram {
  */
 export class Checker {
   private functions = new Map<string, FunctionSig>();
+  private structs = new Map<string, StructInfo>();
 
   check(program: N.Program): CheckedProgram {
+    // Pass zero: structs, because every signature below is allowed to mention
+    // one. A struct may only contain types that already exist, which is what
+    // keeps a struct from containing itself and running out of universe.
+    for (const decl of program.body) {
+      if (decl.kind === "StructDecl") this.checkStructDecl(decl);
+    }
+
     // First pass: collect function signatures so calls can be forward-referenced.
     for (const decl of program.body) {
       if (decl.kind === "FunctionDecl") {
-        if (!isValidType(decl.returnType.name)) {
-          throw new TypeError_(
-            `Unknown return type '${decl.returnType.name}'.${this.typeHint(decl.returnType.name)}`,
-            decl.line
-          );
-        }
-        const params: YType[] = decl.params.map((p) => {
-          if (!isValidType(p.paramType.name)) {
-            throw new TypeError_(
-              `Unknown parameter type '${p.paramType.name}'.${this.typeHint(p.paramType.name)}`,
-              decl.line
-            );
-          }
-          return p.paramType.name as YType;
-        });
+        const returnType = this.resolveType(decl.returnType, decl.line);
+        const params: YType[] = decl.params.map((p) => this.resolveType(p.paramType, decl.line));
         if (decl.name.startsWith(RESERVED_PREFIX)) {
           throw new TypeError_(
             `Function name '${decl.name}' is reserved for the yarescript runtime. Pick another.`,
@@ -167,7 +176,7 @@ export class Checker {
         this.functions.set(decl.name, {
           name: decl.name,
           params,
-          returnType: decl.returnType.name as YType,
+          returnType,
           visibility: decl.visibility,
         });
       }
@@ -188,15 +197,78 @@ export class Checker {
       // ImportDecl: nothing to check yet (module resolution is a v2 feature).
     }
 
-    return { program, functions: this.functions };
+    return { program, functions: this.functions, structs: this.structs };
+  }
+
+  /**
+   * Lays a struct out field by field, each at its natural alignment. The
+   * result is the only place a field offset is ever computed, which is the
+   * difference between a struct that works and one that works on Tuesdays.
+   */
+  private checkStructDecl(decl: N.StructDecl) {
+    if (PRIMITIVES.has(decl.name as any)) {
+      throw new TypeError_(`'${decl.name}' is a built-in type, so it cannot also be a struct`, decl.line);
+    }
+    if (this.structs.has(decl.name)) {
+      throw new TypeError_(`Struct '${decl.name}' is already defined`, decl.line);
+    }
+    if (decl.name.startsWith(RESERVED_PREFIX)) {
+      throw new TypeError_(
+        `Struct name '${decl.name}' is reserved for the yarescript runtime. Pick another.`,
+        decl.line
+      );
+    }
+    if (!decl.fields.length) {
+      throw new TypeError_(`Struct '${decl.name}' has no fields. An empty record holds nothing and costs a pointer.`, decl.line);
+    }
+    const fields: StructInfo["fields"] = [];
+    const seen = new Set<string>();
+    let offset = 0;
+    let widest = 1;
+    for (const f of decl.fields) {
+      if (seen.has(f.name)) {
+        throw new TypeError_(`Struct '${decl.name}' has two fields called '${f.name}'`, decl.line);
+      }
+      seen.add(f.name);
+      const type = this.resolveType(f.fieldType, decl.line);
+      const align = alignOfType(type);
+      offset = Math.ceil(offset / align) * align;
+      const size = sizeOfType(type);
+      fields.push({ name: f.name, type, offset, size });
+      offset += size;
+      widest = Math.max(widest, align);
+    }
+    // round the whole thing up so an array of these keeps every element aligned
+    const size = Math.ceil(offset / widest) * widest;
+    this.structs.set(decl.name, { name: decl.name, fields, size });
+  }
+
+  /**
+   * Turns a written type into a real one. `int[]` becomes the string "int[]",
+   * `Point` becomes "Point", and anything else gets an error with a suggestion
+   * attached, because that is the part people actually read.
+   */
+  private resolveType(node: N.TypeNode, line: number): YType {
+    const base = node.name;
+    if (!PRIMITIVES.has(base as any) && !this.structs.has(base)) {
+      const alias = COMMON_ALIASES[base.toLowerCase()];
+      const hint = alias
+        ? ` Did you mean '${alias}'?`
+        : didYouMean(base, [...PRIMITIVES, ...this.structs.keys()]);
+      throw new TypeError_(`Unknown type '${N.typeSpelling(node)}'.${hint}`, line);
+    }
+    if (base === "void" && node.dims > 0) {
+      throw new TypeError_(`An array of 'void' holds nothing. Declare something with a size.`, line);
+    }
+    return N.typeSpelling(node);
   }
 
   private checkFunction(fn: N.FunctionDecl, outer: Scope) {
     const scope = outer.child();
     for (const p of fn.params) {
-      scope.declare(p.name, p.paramType.name as YType, false, fn.line);
+      scope.declare(p.name, this.resolveType(p.paramType, fn.line), false, fn.line);
     }
-    const returnType = fn.returnType.name as YType;
+    const returnType = this.resolveType(fn.returnType, fn.line);
     const sawReturn = this.checkBlock(fn.body, scope, returnType);
     if (returnType !== "void" && !sawReturn) {
       throw new TypeError_(
@@ -212,9 +284,30 @@ export class Checker {
    * that courtesy; a variable of type int is not secretly a u8.
    */
   private checkExprAs(expr: N.Expr, scope: Scope, target: YType): YType {
+    // `[1, 2, 3]` has no type of its own; it takes the one it is being handed.
+    if (expr.kind === "ArrayLiteral") {
+      if (!isArrayType(target)) {
+        throw new TypeError_(
+          `Cannot put an array literal in something of type '${target}'. Declare an array type, e.g. let: int[] xs = [1, 2, 3];`,
+          expr.line
+        );
+      }
+      const elem = elemTypeOf(target);
+      expr.elements.forEach((element, idx) => {
+        const t = this.checkExprAs(element, scope, elem);
+        if (!isAssignable(t, elem)) {
+          throw new TypeError_(
+            `Element ${idx + 1} of the array: expected '${elem}', got '${t}'`,
+            expr.line
+          );
+        }
+      });
+      expr.inferredType = target;
+      return target;
+    }
     const t = this.checkExpr(expr, scope);
     if (isAssignable(t, target)) return t;
-    const range = INT_RANGE[target];
+    const range = INT_RANGE[target as ScalarType];
     if (range) {
       const value = literalValueOf(expr);
       if (value !== null) {
@@ -243,7 +336,7 @@ export class Checker {
    */
   private adoptLiteral(literal: N.Expr, nextTo: YType): YType | null {
     if (literal.kind !== "IntLiteral" || !isInteger(nextTo)) return null;
-    const range = INT_RANGE[nextTo];
+    const range = INT_RANGE[nextTo as ScalarType];
     if (!range || literal.value < range[0] || literal.value > range[1]) {
       throw new TypeError_(
         `${literal.value} is out of range for '${nextTo}'. Widen the other operand or use a cast.`,
@@ -255,13 +348,7 @@ export class Checker {
   }
 
   private checkVarDecl(decl: N.VarDecl, scope: Scope) {
-    if (!isValidType(decl.varType.name)) {
-      throw new TypeError_(
-        `Unknown type '${decl.varType.name}'.${this.typeHint(decl.varType.name)}`,
-        decl.line
-      );
-    }
-    const declType = decl.varType.name as YType;
+    const declType = this.resolveType(decl.varType, decl.line);
     if (decl.init) {
       const initType = this.checkExprAs(decl.init, scope, declType);
       if (!isAssignable(initType, declType)) {
@@ -389,23 +476,46 @@ export class Checker {
       case "IndexExpr": {
         const objType = this.checkExpr(expr.object, scope);
         const idxType = this.checkExpr(expr.index, scope);
-        if (objType !== "string") {
-          throw new TypeError_(
-            `Cannot index into a '${objType}'. Only strings can be indexed today.`,
-            expr.line
-          );
+        if (objType === "string") {
+          if (!isInteger(idxType)) {
+            throw new TypeError_(`A string index must be an integer, got '${idxType}'`, expr.line);
+          }
+          expr.inferredType = "char";
+          return "char";
         }
-        if (!isInteger(idxType)) {
-          throw new TypeError_(`A string index must be an integer, got '${idxType}'`, expr.line);
+        if (isArrayType(objType)) {
+          if (!isInteger(idxType)) {
+            throw new TypeError_(`An array index must be an integer, got '${idxType}'`, expr.line);
+          }
+          const elem = elemTypeOf(objType);
+          expr.inferredType = elem;
+          return elem;
         }
-        expr.inferredType = "char";
-        return "char";
+        throw new TypeError_(
+          `Cannot index into a '${objType}'. Strings give you chars and arrays give you elements.`,
+          expr.line
+        );
       }
       case "MemberExpr": {
         const objType = this.checkExpr(expr.object, scope);
-        if (objType === "string" && expr.property === "length") {
+        if ((objType === "string" || isArrayType(objType)) && expr.property === "length") {
           expr.inferredType = "int";
           return "int";
+        }
+        const struct = this.structs.get(objType);
+        if (struct) {
+          const field = struct.fields.find((f) => f.name === expr.property);
+          if (!field) {
+            throw new TypeError_(
+              `Struct '${objType}' has no field '${expr.property}'.${didYouMean(
+                expr.property,
+                struct.fields.map((f) => f.name)
+              )}`,
+              expr.line
+            );
+          }
+          expr.inferredType = field.type;
+          return field.type;
         }
         throw new TypeError_(
           `'${this.stringifyMember(expr)}' is not a value. Did you mean to call it?`,
@@ -413,6 +523,14 @@ export class Checker {
         );
       }
       case "UnaryExpr": {
+        if (expr.operator === "++" || expr.operator === "--") {
+          const t = this.checkLvalue(expr.argument, scope, expr.line);
+          if (!isNumeric(t)) {
+            throw new TypeError_(`'${expr.operator}' needs something numeric to count, got '${t}'`, expr.line);
+          }
+          expr.inferredType = t;
+          return t;
+        }
         const t = this.checkExpr(expr.argument, scope);
         if (expr.operator === "!") {
           if (t !== "bool") throw new TypeError_(`'!' requires bool, got '${t}'`, expr.line);
@@ -424,14 +542,20 @@ export class Checker {
         return t;
       }
       case "CastExpr": {
-        if (!isValidType(expr.targetType.name)) {
-          throw new TypeError_(`Unknown cast target type '${expr.targetType.name}'`, expr.line);
+        const target = this.resolveType(expr.targetType, expr.line);
+        if (isArrayType(target) || this.structs.has(target)) {
+          throw new TypeError_(
+            `Cannot cast to '${target}'. Arrays and structs are pointers, and a pointer is not a number.`,
+            expr.line
+          );
         }
-        const target = expr.targetType.name as YType;
         if (target === "void") {
           throw new TypeError_(`Cannot cast to 'void'. Use 'return;' if you want to stop here.`, expr.line);
         }
         const from = this.checkExpr(expr.expr, scope);
+        if (isArrayType(from) || this.structs.has(from)) {
+          throw new TypeError_(`Cannot cast a '${from}' to '${target}'.`, expr.line);
+        }
         if (from === "string" || target === "string") {
           throw new TypeError_(
             `Cannot cast '${from}' to '${target}'. A string is a pointer plus a length, not a number.`,
@@ -468,9 +592,15 @@ export class Checker {
         }
         if (comparisons.has(expr.operator)) {
           if (lt === "string" && rt === "string") {
-            if (expr.operator !== "==" && expr.operator !== "!=") {
-              throw new TypeError_(`Only '==' and '!=' work on strings`, expr.line);
-            }
+            // Ordering is byte order, which for UTF-8 is also code point order.
+            // It is not a collation, and it does not pretend to be one.
+            expr.inferredType = "bool";
+            return "bool";
+          } else if (isArrayType(lt) || isArrayType(rt) || this.structs.has(lt) || this.structs.has(rt)) {
+            throw new TypeError_(
+              `Cannot compare '${lt}' and '${rt}' with '${expr.operator}'. Two arrays with the same contents are still two arrays; compare them element by element.`,
+              expr.line
+            );
           } else if (isNumeric(lt) && isNumeric(rt)) {
             // fine
           } else if (lt === "bool" && rt === "bool") {
@@ -495,6 +625,12 @@ export class Checker {
           expr.inferredType = "string";
           return "string";
         }
+        if (isArrayType(lt) || isArrayType(rt) || this.structs.has(lt) || this.structs.has(rt)) {
+          throw new TypeError_(
+            `'${expr.operator}' does not work on '${isArrayType(lt) ? lt : rt}'. Loop over the elements if you want to combine them.`,
+            expr.line
+          );
+        }
         if (!isNumeric(lt) || !isNumeric(rt)) {
           throw new TypeError_(`'${expr.operator}' requires numeric operands, got '${lt}' and '${rt}'`, expr.line);
         }
@@ -509,22 +645,35 @@ export class Checker {
         return result;
       }
       case "AssignExpr": {
-        if (expr.target.kind !== "Identifier") {
-          throw new TypeError_(`Left-hand side of assignment must be a variable`, expr.line);
+        const targetType = this.checkLvalue(expr.target, scope, expr.line);
+        if (expr.operator !== "=" && !isNumeric(targetType)) {
+          throw new TypeError_(`'${expr.operator}' requires a numeric target, got '${targetType}'`, expr.line);
         }
-        const v = scope.lookup(expr.target.name);
-        if (!v) throw new TypeError_(`Unknown identifier '${expr.target.name}'`, expr.line);
-        if (v.isConst) throw new TypeError_(`Cannot assign to const '${expr.target.name}'`, expr.line);
-        const valueType = this.checkExprAs(expr.value, scope, v.type);
-        if (expr.operator !== "=" && !isNumeric(v.type)) {
-          throw new TypeError_(`'${expr.operator}' requires a numeric variable`, expr.line);
+        const valueType = this.checkExprAs(expr.value, scope, targetType);
+        if (!isAssignable(valueType, targetType)) {
+          throw new TypeError_(
+            `Cannot assign '${valueType}' to '${targetType}' in '${this.describeLvalue(expr.target)}'`,
+            expr.line
+          );
         }
-        if (!isAssignable(valueType, v.type)) {
-          throw new TypeError_(`Cannot assign '${valueType}' to '${v.type}' variable '${expr.target.name}'`, expr.line);
+        expr.inferredType = targetType;
+        return targetType;
+      }
+      case "ArrayLiteral":
+        // Reached only when nothing told the literal what to be.
+        throw new TypeError_(
+          `An array literal needs an array type to aim at: let: int[] xs = [1, 2, 3];`,
+          expr.line
+        );
+      case "NewArrayExpr": {
+        const elem = this.resolveType(expr.elemType, expr.line);
+        const sizeType = this.checkExprAs(expr.size, scope, "int");
+        if (!isInteger(sizeType)) {
+          throw new TypeError_(`An array size must be an integer, got '${sizeType}'`, expr.line);
         }
-        expr.target.inferredType = v.type;
-        expr.inferredType = v.type;
-        return v.type;
+        const t = arrayOf(elem);
+        expr.inferredType = t;
+        return t;
       }
       case "CallExpr": {
         const calleeName = this.calleeName(expr.callee);
@@ -543,6 +692,32 @@ export class Checker {
           expr.resolvedKind = "host";
           expr.inferredType = sig.returnType;
           return sig.returnType;
+        }
+        if (calleeName && this.structs.has(calleeName)) {
+          // `Point(1, 2)` builds a Point. Positional, because a struct's fields
+          // are already in an order and inventing a second one helps nobody.
+          const struct = this.structs.get(calleeName)!;
+          if (expr.args.length !== struct.fields.length) {
+            throw new TypeError_(
+              `Struct '${calleeName}' has ${struct.fields.length} field(s) (${struct.fields
+                .map((f) => f.name)
+                .join(", ")}), got ${expr.args.length} argument(s)`,
+              expr.line
+            );
+          }
+          expr.args.forEach((arg, idx) => {
+            const field = struct.fields[idx];
+            const t = this.checkExprAs(arg, scope, field.type);
+            if (!isAssignable(t, field.type)) {
+              throw new TypeError_(
+                `Field '${field.name}' of '${calleeName}': expected '${field.type}', got '${t}'`,
+                expr.line
+              );
+            }
+          });
+          expr.resolvedKind = "struct";
+          expr.inferredType = calleeName;
+          return calleeName;
         }
         if (calleeName && this.functions.has(calleeName)) {
           const sig = this.functions.get(calleeName)!;
@@ -593,6 +768,57 @@ export class Checker {
     const nearAlias = suggest(name, Object.keys(COMMON_ALIASES));
     if (nearAlias) return ` Did you mean '${COMMON_ALIASES[nearAlias]}'?`;
     return didYouMean(name, [...this.functions.keys(), ...Object.keys(HOST_FUNCTIONS)]);
+  }
+
+  /**
+   * Everything you are allowed to write on the left of an `=`: a variable, an
+   * array slot, or a struct field. Returns the type of the thing being written.
+   */
+  private checkLvalue(target: N.Expr, scope: Scope, line: number): YType {
+    switch (target.kind) {
+      case "Identifier": {
+        const v = scope.lookup(target.name);
+        if (!v) {
+          throw new TypeError_(
+            `Unknown identifier '${target.name}'.${didYouMean(target.name, this.knownNames(scope))}`,
+            line
+          );
+        }
+        if (v.isConst) throw new TypeError_(`Cannot assign to const '${target.name}'`, line);
+        target.inferredType = v.type;
+        return v.type;
+      }
+      case "IndexExpr":
+      case "MemberExpr": {
+        const base = target.object;
+        if (base.kind === "Identifier") {
+          const v = scope.lookup(base.name);
+          if (v?.isConst) {
+            throw new TypeError_(`Cannot write into const '${base.name}'`, line);
+          }
+        }
+        return this.checkExpr(target, scope);
+      }
+      default:
+        throw new TypeError_(
+          `The left-hand side of an assignment has to be a variable, an array slot, or a struct field`,
+          line
+        );
+    }
+  }
+
+  /** How to say what you were assigning to, in an error message. */
+  private describeLvalue(target: N.Expr): string {
+    switch (target.kind) {
+      case "Identifier":
+        return target.name;
+      case "IndexExpr":
+        return `${this.describeLvalue(target.object)}[...]`;
+      case "MemberExpr":
+        return `${this.describeLvalue(target.object)}.${target.property}`;
+      default:
+        return "<expression>";
+    }
   }
 
   private calleeName(expr: N.Expr): string | null {

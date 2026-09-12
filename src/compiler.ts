@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
-import { check } from "./checker/checker";
+import { check, CheckedProgram } from "./checker/checker";
+import * as N from "./ast/nodes";
 import { generateWasm } from "./codegen/codegen";
 import { generateLoaderJs, generateBrowserLoaderJs } from "./runtime/loader-template";
 import { resolveModules } from "./modules/resolve";
@@ -44,6 +45,39 @@ interface LockFile {
   }[];
 }
 
+export interface FrontEndResult {
+  /** the flattened program, module functions already pulled in */
+  program: N.Program;
+  checked: CheckedProgram;
+  /** every .ys file that went in, dependencies first */
+  files: string[];
+  modules: LinkedModule[];
+}
+
+/**
+ * Everything up to and including the type checker: resolve imports, link the
+ * modules you asked for, check the result. `build` runs this and then emits;
+ * `yare check` runs this and then stops, which is the entire difference
+ * between them.
+ *
+ * Pass `write: false` and not even the .yare.dep object files touch the disk.
+ */
+export function frontEnd(opts: {
+  root: string;
+  config: YareConfig;
+  write?: boolean;
+}): FrontEndResult {
+  const entryPath = path.resolve(opts.root, opts.config.entry);
+  if (!fs.existsSync(entryPath)) {
+    throw new Error(`Entry file not found: ${entryPath} (check "entry" in config.yare)`);
+  }
+  const { program, files } = resolveModules(entryPath);
+  const outDir = path.resolve(opts.root, opts.config.outDir);
+  if (opts.write !== false) fs.mkdirSync(outDir, { recursive: true });
+  const linked = linkModules(program, { outDir, write: opts.write });
+  return { program: linked.program, checked: check(linked.program), files, modules: linked.modules };
+}
+
 /**
  * The whole yarescript build pipeline:
  *   .ys source -> tokens -> AST -> type-checked AST -> WebAssembly (binaryen)
@@ -53,21 +87,13 @@ interface LockFile {
  * find application logic in that loader, that is a bug worth reporting.
  */
 export function build(opts: BuildOptions): BuildResult {
-  const entryPath = path.resolve(opts.root, opts.config.entry);
-  if (!fs.existsSync(entryPath)) {
-    throw new Error(`Entry file not found: ${entryPath} (check "entry" in config.yare)`);
-  }
-
-  // The entry file and everything it imports, flattened into one program.
-  const { program, files } = resolveModules(entryPath);
+  // Resolve, link, and check first: everything past this line emits files, and
+  // none of them should be written for a program that does not type check.
+  const front = frontEnd({ root: opts.root, config: opts.config });
+  const { files, modules: linkedModules } = front;
+  const checked = front.checked;
 
   const outDir = path.resolve(opts.root, opts.config.outDir);
-  fs.mkdirSync(outDir, { recursive: true });
-
-  // @modules.import: compile the modules you asked for into .yare.dep object
-  // files, then pull in only the functions you actually call.
-  const linked = linkModules(program, { outDir });
-  const checked = check(linked.program);
   const result = generateWasm(checked);
 
   const lockPath = path.join(outDir, "config-lock.yare");
@@ -76,7 +102,7 @@ export function build(opts: BuildOptions): BuildResult {
     version: opts.config.version,
     target: opts.config.target,
     generatedBy: "yare 0.1.0",
-    modules: linked.modules.map((m) => ({
+    modules: linkedModules.map((m) => ({
       name: m.name,
       version: m.version,
       dep: path.relative(outDir, m.depPath),
@@ -124,7 +150,7 @@ export function build(opts: BuildOptions): BuildResult {
     watPath,
     exportedFunctions,
     sourceFiles: files,
-    modules: linked.modules,
+    modules: linkedModules,
     lockPath,
   };
 }

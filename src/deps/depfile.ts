@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { parse } from "../parser/parser";
 import * as N from "../ast/nodes";
+import { typeSpelling } from "../ast/nodes";
 
 /**
  * A `.yare.dep` file: an object file, but for WebAssembly.
@@ -56,8 +57,8 @@ export function buildDepFile(
     if (decl.kind !== "FunctionDecl") continue;
     functions.push({
       name: decl.name,
-      params: decl.params.map((p) => ({ type: p.paramType.name, name: p.name })),
-      returnType: decl.returnType.name,
+      params: decl.params.map((p) => ({ type: typeSpelling(p.paramType), name: p.name })),
+      returnType: typeSpelling(decl.returnType),
       startLine: decl.line,
       endLine: decl.body.endLine,
     });

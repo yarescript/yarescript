@@ -59,14 +59,18 @@ test("string equality compares bytes, not pointers", async () => {
   assert.deepStrictEqual(logs, ["true", "true", "false", "true"]);
 });
 
-test("ordering comparisons on strings are rejected by the checker", () => {
-  assert.throws(() => {
-    check(parse(`
-      public function: void main() {
-        let: bool b = "a" < "b";
-      }
-    `));
-  }, TypeError_);
+test("strings order by code point, not by vibes", async () => {
+  const { logs } = await compileAndRun(`
+    public function: void main() {
+      console.println("a" < "b");
+      console.println("b" < "a");
+      console.println("apple" < "apples");
+      console.println("apples" <= "apples");
+      console.println("Z" < "a");
+      console.println("" < "anything");
+    }
+  `);
+  assert.deepStrictEqual(logs, ["true", "false", "true", "true", "true", "true"]);
 });
 
 // ---------------------------------------------------------------------------

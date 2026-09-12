@@ -28,7 +28,7 @@ export async function runTestFile(file: string): Promise<TestResult[]> {
       kind: "FunctionDecl",
       name: "main",
       visibility: "private",
-      returnType: { name: "void", line: 0, column: 0 },
+      returnType: { name: "void", dims: 0, line: 0, column: 0 },
       params: [],
       body: { kind: "Block", body: [], line: 0, endLine: 0 },
       line: 0,

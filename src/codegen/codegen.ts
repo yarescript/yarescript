@@ -1,7 +1,18 @@
 import binaryen = require("binaryen");
 import * as N from "../ast/nodes";
 import { CheckedProgram, HOST_FUNCTIONS } from "../checker/checker";
-import { isNumeric, isSigned, widen, YType } from "../checker/types";
+import {
+  alignOfType,
+  arrayOf,
+  elemTypeOf,
+  isArrayType,
+  isNumeric,
+  isSigned,
+  sizeOfType,
+  widen,
+  YType,
+} from "../checker/types";
+import { StructInfo } from "../checker/checker";
 
 /**
  * Lowers a type-checked yarescript AST straight to a WebAssembly module
@@ -44,6 +55,10 @@ function wasmType(t: YType): number {
       return binaryen.i32;
     case "void":
       return binaryen.none;
+    default:
+      // arrays and structs are both "a pointer to a block of memory", which is
+      // an i32 like every other pointer in here
+      return binaryen.i32;
   }
 }
 
@@ -128,6 +143,8 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   // in life.
   const HEAP_GLOBAL = "__yare_heap";
   let stringRuntimeInstalled = false;
+  let heapInstalled = false;
+  let strCmpInstalled = false;
 
   function internString(value: string): number {
     if (stringOffsets.has(value)) return stringOffsets.get(value)!;
@@ -180,14 +197,14 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
 
   for (const decl of checked.program.body) {
     if (decl.kind !== "FunctionDecl") continue;
-    currentReturnType = decl.returnType.name as YType;
-    const paramTypes = decl.params.map((p) => p.paramType.name as YType);
+    currentReturnType = N.typeSpelling(decl.returnType);
+    const paramTypes = decl.params.map((p) => N.typeSpelling(p.paramType));
     const scope = new FunctionScope(paramTypes);
-    decl.params.forEach((p, idx) => scope.declareParam(p.name, idx, p.paramType.name as YType));
+    decl.params.forEach((p, idx) => scope.declareParam(p.name, idx, N.typeSpelling(p.paramType)));
 
     const body = compileBlock(decl.body, scope);
     const wasmParamType = binaryen.createType(paramTypes.map(wasmType));
-    const wasmReturnType = wasmType(decl.returnType.name as YType);
+    const wasmReturnType = wasmType(N.typeSpelling(decl.returnType));
 
     mod.addFunction(decl.name, wasmParamType, wasmReturnType, scope.localTypes, body);
 
@@ -203,7 +220,7 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   // that concatenates strings in a loop should be allowed to have them.
   const heapStart = (heapCursor + 3) & ~3;
   const memPages = Math.max(1, Math.ceil((heapStart + PAGE_SIZE - 1) / PAGE_SIZE));
-  if (stringRuntimeInstalled) {
+  if (heapInstalled) {
     mod.addGlobal(HEAP_GLOBAL, binaryen.i32, true, mod.i32.const(heapStart));
   }
   mod.setMemory(
@@ -305,6 +322,140 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
     return mod.i64.const(low, high);
   }
 
+  // ------------------------------------------------------------------
+  // Reading and writing one value at a byte offset. Arrays and structs are
+  // both "a pointer plus some offsets", so this is the only place in the
+  // compiler that knows an i8 is one byte wide and a double is eight.
+  //
+  // The alignment hint is capped at 4: every block the allocator hands back
+  // is 4-aligned, and a hint bigger than the address would be a lie that
+  // WebAssembly is entitled to act on.
+  // ------------------------------------------------------------------
+  function alignHint(t: YType): number {
+    return Math.min(sizeOfType(t), 4);
+  }
+
+  function loadAt(t: YType, addr: number): number {
+    switch (t) {
+      case "i8":
+        return mod.i32.load8_s(0, 1, addr);
+      case "u8":
+        return mod.i32.load8_u(0, 1, addr);
+      case "i16":
+        return mod.i32.load16_s(0, 2, addr);
+      case "u16":
+      case "char":
+        return mod.i32.load16_u(0, 2, addr);
+      case "long":
+      case "u64":
+        return mod.i64.load(0, alignHint(t), addr);
+      case "float":
+        return mod.f32.load(0, 4, addr);
+      case "double":
+        return mod.f64.load(0, alignHint(t), addr);
+      default:
+        return mod.i32.load(0, 4, addr);
+    }
+  }
+
+  function storeAt(t: YType, addr: number, value: number): number {
+    switch (t) {
+      case "i8":
+      case "u8":
+        return mod.i32.store8(0, 1, addr, value);
+      case "i16":
+      case "u16":
+      case "char":
+        return mod.i32.store16(0, 2, addr, value);
+      case "long":
+      case "u64":
+        return mod.i64.store(0, alignHint(t), addr, value);
+      case "float":
+        return mod.f32.store(0, 4, addr, value);
+      case "double":
+        return mod.f64.store(0, alignHint(t), addr, value);
+      default:
+        return mod.i32.store(0, 4, addr, value);
+    }
+  }
+
+  /**
+   * Arrays keep their element count in a u32 header, exactly like strings.
+   * Eight byte elements get an eight byte header so the first one stays
+   * aligned, which is the whole reason this is a function.
+   */
+  function arrayHeader(elem: YType): number {
+    return sizeOfType(elem) === 8 ? 8 : 4;
+  }
+
+  /** A place you can write to: an array slot or a struct field. */
+  interface Lvalue {
+    /** instructions that compute the address, in order */
+    setup: number[];
+    /** local holding the byte address once `setup` has run */
+    addrLocal: number;
+    type: YType;
+  }
+
+  /**
+   * Works out where an array slot or struct field lives, and puts the address
+   * in a local. The address is computed once, on purpose: `xs[i++] = 1` is
+   * allowed to increment `i` exactly one time.
+   */
+  function compileLvalue(target: N.IndexExpr | N.MemberExpr, scope: FunctionScope): Lvalue {
+    const objType = (target.object as any).inferredType as YType;
+    const ptrLocal = scope.declareLocal(`__yare_lv_ptr_${labelId++}`, "int");
+    const addrLocal = scope.declareLocal(`__yare_lv_at_${labelId++}`, "int");
+    const ptr = () => mod.local.get(ptrLocal, binaryen.i32);
+
+    if (target.kind === "IndexExpr") {
+      const elem = elemTypeOf(objType);
+      const size = sizeOfType(elem);
+      const header = arrayHeader(elem);
+      const idxLocal = scope.declareLocal(`__yare_lv_idx_${labelId++}`, "int");
+      const idx = () => mod.local.get(idxLocal, binaryen.i32);
+      const idxType = (target.index as any).inferredType as YType;
+      return {
+        setup: [
+          mod.local.set(ptrLocal, compileExpr(target.object, scope)),
+          mod.local.set(idxLocal, castTo("int", idxType, compileExpr(target.index, scope))),
+          // out of range is a trap, not a shrug: reading past the end of an
+          // array is how programs find out what their neighbours were storing
+          mod.if(
+            mod.i32.or(
+              mod.i32.lt_s(idx(), mod.i32.const(0)),
+              mod.i32.ge_s(idx(), mod.i32.load(0, 4, ptr()))
+            ),
+            mod.unreachable()
+          ),
+          mod.local.set(
+            addrLocal,
+            mod.i32.add(
+              mod.i32.add(ptr(), mod.i32.const(header)),
+              mod.i32.mul(idx(), mod.i32.const(size))
+            )
+          ),
+        ],
+        addrLocal,
+        type: elem,
+      };
+    }
+
+    const struct = checked.structs.get(objType);
+    if (!struct) {
+      throw new Error(`codegen: '${objType}' has no fields to reach into (checker should have caught this)`);
+    }
+    const field = struct.fields.find((f) => f.name === target.property)!;
+    return {
+      setup: [
+        mod.local.set(ptrLocal, compileExpr(target.object, scope)),
+        mod.local.set(addrLocal, mod.i32.add(ptr(), mod.i32.const(field.offset))),
+      ],
+      addrLocal,
+      type: field.type,
+    };
+  }
+
   function wasmKind(t: YType): "i32" | "i64" | "f32" | "f64" {
     if (t === "long" || t === "u64") return "i64";
     if (t === "float") return "f32";
@@ -320,9 +471,13 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   // get added to the module only if your program actually uses a string
   // operator, because a hello-world does not need a heap.
   // ------------------------------------------------------------------
-  function ensureStringRuntime(): void {
-    if (stringRuntimeInstalled) return;
-    stringRuntimeInstalled = true;
+  /**
+   * The bump allocator. Strings, arrays, and structs all live on it, so it is
+   * installed the first time any of them shows up in your program.
+   */
+  function ensureHeap(): void {
+    if (heapInstalled) return;
+    heapInstalled = true;
 
     const page = mod.i32.const(PAGE_SIZE);
     const currentBytes = mod.i32.mul(mod.memory.size(), page);
@@ -368,6 +523,12 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
         mod.return(mod.local.get(1, binaryen.i32)),
       ])
     );
+  }
+
+  function ensureStringRuntime(): void {
+    if (stringRuntimeInstalled) return;
+    stringRuntimeInstalled = true;
+    ensureHeap();
 
     // __yare_str_alloc(len) -> pointer to a string header plus `len` bytes.
     mod.addFunction(
@@ -490,6 +651,79 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
     );
   }
 
+  /**
+   * Ordering for strings. Byte order, which for UTF-8 is also code point
+   * order: predictable, locale-free, and not pretending to be a collation.
+   */
+  function strCompare(operator: string, l: number, r: number): number {
+    if (!strCmpInstalled) {
+      strCmpInstalled = true;
+      addStrCmp();
+    }
+    const cmp = mod.call("__yare_str_cmp", [l, r], binaryen.i32);
+    // a fresh zero per branch: a wasm node is allowed exactly one parent
+    switch (operator) {
+      case "<":
+        return mod.i32.lt_s(cmp, mod.i32.const(0));
+      case ">":
+        return mod.i32.gt_s(cmp, mod.i32.const(0));
+      case "<=":
+        return mod.i32.le_s(cmp, mod.i32.const(0));
+      default:
+        return mod.i32.ge_s(cmp, mod.i32.const(0));
+    }
+  }
+
+  /**
+   * __yare_str_cmp(a, b) -> negative when a sorts first, 0 when they hold the
+   * same bytes, positive when b sorts first. Byte by byte, then by length, so
+   * "apple" < "apples" for the boring and correct reason.
+   */
+  function addStrCmp(): void {
+    const done = "yare_cmp_done";
+    const loop = "yare_cmp_loop";
+    mod.addFunction(
+      "__yare_str_cmp",
+      binaryen.createType([binaryen.i32, binaryen.i32]),
+      binaryen.i32,
+      [binaryen.i32, binaryen.i32, binaryen.i32, binaryen.i32, binaryen.i32],
+      blk([
+        mod.block(done, [
+          mod.local.set(2, mod.i32.load(0, 4, mod.local.get(0, binaryen.i32))),
+          mod.local.set(3, mod.i32.load(0, 4, mod.local.get(1, binaryen.i32))),
+          mod.local.set(4, mod.i32.const(0)),
+          mod.loop(
+            loop,
+            blk([
+              mod.br(
+                done,
+                mod.i32.or(
+                  mod.i32.ge_u(mod.local.get(4, binaryen.i32), mod.local.get(2, binaryen.i32)),
+                  mod.i32.ge_u(mod.local.get(4, binaryen.i32), mod.local.get(3, binaryen.i32))
+                )
+              ),
+              mod.if(
+                mod.i32.ne(
+                  mod.i32.load8_u(0, 1, mod.i32.add(mod.i32.add(mod.local.get(0, binaryen.i32), mod.i32.const(4)), mod.local.get(4, binaryen.i32))),
+                  mod.i32.load8_u(0, 1, mod.i32.add(mod.i32.add(mod.local.get(1, binaryen.i32), mod.i32.const(4)), mod.local.get(4, binaryen.i32)))
+                ),
+                mod.return(
+                  mod.i32.sub(
+                    mod.i32.load8_u(0, 1, mod.i32.add(mod.i32.add(mod.local.get(0, binaryen.i32), mod.i32.const(4)), mod.local.get(4, binaryen.i32))),
+                    mod.i32.load8_u(0, 1, mod.i32.add(mod.i32.add(mod.local.get(1, binaryen.i32), mod.i32.const(4)), mod.local.get(4, binaryen.i32)))
+                  )
+                )
+              ),
+              mod.local.set(4, mod.i32.add(mod.local.get(4, binaryen.i32), mod.i32.const(1))),
+              mod.br(loop),
+            ])
+          ),
+        ]),
+        mod.return(mod.i32.sub(mod.local.get(2, binaryen.i32), mod.local.get(3, binaryen.i32))),
+      ])
+    );
+  }
+
   function compileBlock(block: N.Block, scope: FunctionScope): number {
     const child = scope.child();
     const stmts = block.body.map((s) => compileStmt(s, child));
@@ -499,7 +733,7 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   function compileStmt(stmt: N.Stmt, scope: FunctionScope): number {
     switch (stmt.kind) {
       case "VarDecl": {
-        const type = stmt.varType.name as YType;
+        const type = N.typeSpelling(stmt.varType);
         const index = scope.declareLocal(stmt.name, type);
         if (stmt.init) {
           // `let: long y = 2;` is legal yarescript, and an i32.const sitting in
@@ -615,6 +849,12 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
         return castTo(target, from, compileExpr(expr.expr, scope));
       }
       case "IndexExpr": {
+        const objType = (expr.object as any).inferredType as YType;
+        if (objType !== "string") {
+          const lv = compileLvalue(expr, scope);
+          const get = mod.local.get(lv.addrLocal, binaryen.i32);
+          return blk([...lv.setup, loadAt(lv.type, get)], wasmType(lv.type));
+        }
         // Bounds checked, because reading past the end of a string is how
         // programs find out what their neighbours were storing.
         const idxType = (expr.index as any).inferredType as YType;
@@ -645,11 +885,79 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
           binaryen.i32
         );
       }
+      case "ArrayLiteral": {
+        ensureHeap();
+        const arrType = expr.inferredType as YType;
+        const elem = elemTypeOf(arrType);
+        const size = sizeOfType(elem);
+        const header = arrayHeader(elem);
+        const ptrLocal = scope.declareLocal(`__yare_arr_${labelId++}`, "int");
+        const ptr = () => mod.local.get(ptrLocal, binaryen.i32);
+        const steps: number[] = [
+          mod.local.set(
+            ptrLocal,
+            mod.call("__yare_alloc", [mod.i32.const(header + expr.elements.length * size)], binaryen.i32)
+          ),
+          mod.i32.store(0, 4, ptr(), mod.i32.const(expr.elements.length)),
+        ];
+        expr.elements.forEach((element, idx) => {
+          const elemType = (element as any).inferredType as YType;
+          const value = normalize(elem, castTo(elem, elemType, compileExpr(element, scope)));
+          steps.push(
+            storeAt(elem, mod.i32.add(ptr(), mod.i32.const(header + idx * size)), value)
+          );
+        });
+        steps.push(ptr());
+        return blk(steps, binaryen.i32);
+      }
+      case "NewArrayExpr": {
+        ensureHeap();
+        const elem = elemTypeOf(expr.inferredType as YType);
+        const size = sizeOfType(elem);
+        const header = arrayHeader(elem);
+        const countLocal = scope.declareLocal(`__yare_len_${labelId++}`, "int");
+        const bytesLocal = scope.declareLocal(`__yare_bytes_${labelId++}`, "int");
+        const ptrLocal = scope.declareLocal(`__yare_arr_${labelId++}`, "int");
+        const sizeType = (expr.size as any).inferredType as YType;
+        const count = () => mod.local.get(countLocal, binaryen.i32);
+        return blk(
+          [
+            mod.local.set(countLocal, castTo("int", sizeType, compileExpr(expr.size, scope))),
+            // a negative size would allocate half the address space, so it
+            // stops here instead
+            mod.if(mod.i32.lt_s(count(), mod.i32.const(0)), mod.unreachable()),
+            mod.local.set(bytesLocal, mod.i32.mul(count(), mod.i32.const(size))),
+            mod.local.set(
+              ptrLocal,
+              mod.call(
+                "__yare_alloc",
+                [mod.i32.add(mod.i32.const(header), mod.local.get(bytesLocal, binaryen.i32))],
+                binaryen.i32
+              )
+            ),
+            mod.i32.store(0, 4, mod.local.get(ptrLocal, binaryen.i32), count()),
+            // zero filled, because "whatever was there before" is not a value
+            mod.memory.fill(
+              mod.i32.add(mod.local.get(ptrLocal, binaryen.i32), mod.i32.const(header)),
+              mod.i32.const(0),
+              mod.local.get(bytesLocal, binaryen.i32)
+            ),
+            mod.local.get(ptrLocal, binaryen.i32),
+          ],
+          binaryen.i32
+        );
+      }
       case "MemberExpr": {
         const objType = (expr.object as any).inferredType as YType;
-        if (objType === "string" && expr.property === "length") {
-          // The length is the u32 sitting in front of the bytes.
+        if ((objType === "string" || isArrayType(objType)) && expr.property === "length") {
+          // The length is the u32 sitting in front of the bytes, for strings
+          // and arrays alike, which is why they share a header shape.
           return mod.i32.load(0, 4, compileExpr(expr.object, scope));
+        }
+        if (checked.structs.has(objType)) {
+          const lv = compileLvalue(expr, scope);
+          const get = mod.local.get(lv.addrLocal, binaryen.i32);
+          return blk([...lv.setup, loadAt(lv.type, get)], wasmType(lv.type));
         }
         throw new Error("codegen: bare member expressions are not values (checker should have caught this)");
       }
@@ -663,8 +971,35 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
           return arith(t, "sub", zero(t), val);
         }
         if (expr.operator === "++" || expr.operator === "--") {
+          if (expr.argument.kind === "IndexExpr" || expr.argument.kind === "MemberExpr") {
+            // `xs[i]++` and `p.x++`: read the slot, nudge it, put it back.
+            const lv = compileLvalue(expr.argument, scope);
+            const wt = wasmType(lv.type);
+            const oldLocal = scope.declareLocal(`__yare_old_${labelId++}`, lv.type);
+            const newLocal = scope.declareLocal(`__yare_new_${labelId++}`, lv.type);
+            const addr = () => mod.local.get(lv.addrLocal, binaryen.i32);
+            const bumped = normalize(
+              lv.type,
+              arith(
+                lv.type,
+                expr.operator === "++" ? "add" : "sub",
+                mod.local.get(oldLocal, wt),
+                one_(lv.type)
+              )
+            );
+            const steps = [
+              ...lv.setup,
+              mod.local.set(oldLocal, loadAt(lv.type, addr())),
+              mod.local.set(newLocal, bumped),
+              storeAt(lv.type, addr(), mod.local.get(newLocal, wt)),
+            ];
+            // prefix yields the new value, postfix the one you had, and both
+            // are read out of a local so no wasm node ends up with two parents
+            steps.push(mod.local.get(expr.prefix ? newLocal : oldLocal, wt));
+            return blk(steps, wt);
+          }
           if (expr.argument.kind !== "Identifier") {
-            throw new Error("codegen: ++/-- only supported on simple variables");
+            throw new Error("codegen: ++/-- only supported on variables, array slots, and struct fields");
           }
           const info = scope.lookup(expr.argument.name);
           const one = one_(t);
@@ -697,8 +1032,25 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
         return compileBinary(expr.operator, lt, rt, l, r);
       }
       case "AssignExpr": {
+        if (expr.target.kind === "IndexExpr" || expr.target.kind === "MemberExpr") {
+          const lv = compileLvalue(expr.target, scope);
+          const wt = wasmType(lv.type);
+          const valueType = (expr.value as any).inferredType as YType;
+          let value = castTo(lv.type, valueType, compileExpr(expr.value, scope));
+          if (expr.operator !== "=") {
+            // `xs[i] += 2` reads the slot, does the maths, writes it back
+            const op = expr.operator.replace("=", "");
+            const current = loadAt(lv.type, mod.local.get(lv.addrLocal, binaryen.i32));
+            value = compileBinary(op, lv.type, lv.type, current, value);
+          }
+          const store = storeAt(lv.type, mod.local.get(lv.addrLocal, binaryen.i32), normalize(lv.type, value));
+          return blk(
+            [...lv.setup, store, loadAt(lv.type, mod.local.get(lv.addrLocal, binaryen.i32))],
+            wt
+          );
+        }
         if (expr.target.kind !== "Identifier") {
-          throw new Error("codegen: complex assignment targets not yet supported");
+          throw new Error("codegen: that is not somewhere a value can be put");
         }
         const info = scope.lookup(expr.target.name);
         let value = compileExpr(expr.value, scope);
@@ -719,6 +1071,33 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
           const hostName = sig.overloads[argType]!;
           const args = [compileExpr(expr.args[0], scope)];
           return mod.call(hostName, args, wasmType(sig.returnType));
+        }
+        if (expr.resolvedKind === "struct") {
+          // `Point(1, 2)` is not a call at all: it is an allocation followed by
+          // one store per field, which is why it needs no function to exist.
+          ensureHeap();
+          const struct = checked.structs.get(calleeName)!;
+          const ptrLocal = scope.declareLocal(`__yare_obj_${labelId++}`, "int");
+          const steps: number[] = [
+            mod.local.set(
+              ptrLocal,
+              mod.call("__yare_alloc", [mod.i32.const(struct.size)], binaryen.i32)
+            ),
+          ];
+          expr.args.forEach((arg, idx) => {
+            const field = struct.fields[idx];
+            const argType = (arg as any).inferredType as YType;
+            const value = normalize(field.type, castTo(field.type, argType, compileExpr(arg, scope)));
+            steps.push(
+              storeAt(
+                field.type,
+                mod.i32.add(mod.local.get(ptrLocal, binaryen.i32), mod.i32.const(field.offset)),
+                value
+              )
+            );
+          });
+          steps.push(mod.local.get(ptrLocal, binaryen.i32));
+          return blk(steps, binaryen.i32);
         }
         // user function
         const args = expr.args.map((a) => compileExpr(a, scope));
@@ -760,6 +1139,11 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
           return mod.call("__yare_str_eq", [l, r], binaryen.i32);
         case "!=":
           return mod.i32.eqz(mod.call("__yare_str_eq", [l, r], binaryen.i32));
+        case "<":
+        case ">":
+        case "<=":
+        case ">=":
+          return strCompare(operator, l, r);
         default:
           throw new Error(`codegen: '${operator}' is not defined for string`);
       }
@@ -966,6 +1350,14 @@ function walk(node: N.Node, visit: (n: N.Node) => void): void {
     case "IndexExpr":
       walk(node.object, visit);
       walk(node.index, visit);
+      break;
+    case "ArrayLiteral":
+      node.elements.forEach((e) => walk(e, visit));
+      break;
+    case "NewArrayExpr":
+      walk(node.size, visit);
+      break;
+    case "StructDecl":
       break;
     case "MemberExpr":
       walk(node.object, visit);

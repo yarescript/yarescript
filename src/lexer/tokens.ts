@@ -25,6 +25,7 @@ export enum TokenType {
   True = "True",
   False = "False",
   New = "New",
+  Struct = "Struct",
 
   // types (kept as identifiers too, but reserved for clarity in the parser)
   TypeKeyword = "TypeKeyword",
@@ -102,6 +103,7 @@ export const KEYWORDS: Record<string, TokenType> = {
   true: TokenType.True,
   false: TokenType.False,
   new: TokenType.New,
+  struct: TokenType.Struct,
 };
 
 // Primitive yarescript types. Kept separate from KEYWORDS so that identifiers
@@ -110,11 +112,17 @@ export const KEYWORDS: Record<string, TokenType> = {
 // highlight.
 export const PRIMITIVE_TYPES = new Set([
   "void",
-  "int",
-  "long",
-  "float",
-  "double",
   "bool",
   "string",
+  "i8",
+  "i16",
   "char",
+  "int",
+  "long",
+  "u8",
+  "u16",
+  "u32",
+  "u64",
+  "float",
+  "double",
 ]);

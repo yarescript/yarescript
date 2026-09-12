@@ -6,9 +6,17 @@
 export type Visibility = "public" | "private";
 
 export interface TypeNode {
-  name: string; // "int" | "float" | "bool" | "string" | "void" | user type name
+  /** the base name: "int", "Point". For `int[]` this is still "int". */
+  name: string;
+  /** how many `[]` follow the name. `int` is 0, `int[]` is 1, `int[][]` is 2. */
+  dims: number;
   line: number;
   column: number;
+}
+
+/** The spelling you would type: `int`, `Point`, `string[]`. */
+export function typeSpelling(t: TypeNode): string {
+  return t.name + "[]".repeat(t.dims);
 }
 
 export interface Param {
@@ -19,6 +27,7 @@ export interface Param {
 export type Node =
   | Program
   | FunctionDecl
+  | StructDecl
   | VarDecl
   | Block
   | IfStmt
@@ -41,11 +50,29 @@ export type Node =
   | BoolLiteral
   | MemberExpr
   | CastExpr
-  | IndexExpr;
+  | IndexExpr
+  | ArrayLiteral
+  | NewArrayExpr;
 
 export interface Program {
   kind: "Program";
-  body: (FunctionDecl | VarDecl | ImportDecl | DirectiveDecl)[];
+  body: (FunctionDecl | StructDecl | VarDecl | ImportDecl | DirectiveDecl)[];
+}
+
+/**
+ * A fixed-layout record: `struct Point { int x; int y; }`.
+ *
+ * Fields are laid out in the order you wrote them, each at its natural size,
+ * which is exactly what makes them cheap: a struct is a pointer and some
+ * offsets, with no reflection and no surprises.
+ */
+export interface StructDecl {
+  kind: "StructDecl";
+  name: string;
+  fields: { name: string; fieldType: TypeNode }[];
+  line: number;
+  /** line of the closing brace, which `yare fmt` needs to place comments */
+  endLine: number;
 }
 
 /**
@@ -167,7 +194,9 @@ export type Expr =
   | BoolLiteral
   | MemberExpr
   | CastExpr
-  | IndexExpr;
+  | IndexExpr
+  | ArrayLiteral
+  | NewArrayExpr;
 
 export interface BinaryExpr {
   kind: "BinaryExpr";
@@ -203,8 +232,12 @@ export interface CallExpr {
   args: Expr[];
   line: number;
   inferredType?: string;
-  /** resolved by the checker: "host" for imported/builtin functions, "user" for yarescript functions */
-  resolvedKind?: "host" | "user";
+  /**
+   * resolved by the checker: "host" for imported/builtin functions, "user" for
+   * yarescript functions, "struct" for `Point(1, 2)`, which looks exactly like
+   * a call and is not one.
+   */
+  resolvedKind?: "host" | "user" | "struct";
 }
 
 /**
@@ -228,6 +261,26 @@ export interface IndexExpr {
   kind: "IndexExpr";
   object: Expr;
   index: Expr;
+  line: number;
+  inferredType?: string;
+}
+
+/**
+ * An array literal: `[1, 2, 3]`. The element type comes from wherever the
+ * literal is going, so the checker fills it in rather than guessing here.
+ */
+export interface ArrayLiteral {
+  kind: "ArrayLiteral";
+  elements: Expr[];
+  line: number;
+  inferredType?: string;
+}
+
+/** A sized, zero-filled array: `new int[5]`. */
+export interface NewArrayExpr {
+  kind: "NewArrayExpr";
+  elemType: TypeNode;
+  size: Expr;
   line: number;
   inferredType?: string;
 }

@@ -1,0 +1,55 @@
+// Arrays and structs: the two ways yarescript holds more than one value.
+// A struct is a fixed-layout record; an array is a length followed by slots.
+// Build it with `yare build`, run it with `yare run`.
+
+struct Item {
+    string name;
+    int price;
+    int count;
+}
+
+public function: int lineTotal(Item item) {
+    return item.price * item.count;
+}
+
+public function: int basketTotal(Item[] items) {
+    let: int total = 0;
+    let: int i = 0;
+    while (i < items.length) {
+        total += lineTotal(items[i]);
+        i++;
+    }
+    return total;
+}
+
+public function: void printBasket(Item[] items) {
+    let: int i = 0;
+    while (i < items.length) {
+        console.println(items[i].name);
+        console.println(lineTotal(items[i]));
+        i++;
+    }
+}
+
+public function: void main() {
+    let: Item[] basket = [Item("coffee", 400, 2), Item("filter", 150, 3), Item("mug", 900, 1)];
+    printBasket(basket);
+    console.println(basket.length);
+    console.println(basketTotal(basket));
+
+    // A tally in a byte array, because a u8[] is exactly that: one byte each.
+    let: u8[] tally = new u8[4];
+    let: int i = 0;
+    while (i < basket.length) {
+        tally[basket[i].count]++;
+        i++;
+    }
+    console.println(tally[1]);
+    console.println(tally[2]);
+    console.println(tally[3]);
+
+    // Structs are reached through a pointer, so this edits the real item.
+    basket[2].count += 2;
+    console.println(basket[2].count);
+    console.println(basketTotal(basket));
+}

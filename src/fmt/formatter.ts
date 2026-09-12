@@ -67,6 +67,8 @@ export function format(source: string, fileName = "<source>"): string {
       p.line(`@${decl.namespace}.${decl.action}(${args});`, decl.line);
     } else if (decl.kind === "ImportDecl") {
       p.line(`import { ${decl.names.join(", ")} } from ${JSON.stringify(decl.from)};`, decl.line);
+    } else if (decl.kind === "StructDecl") {
+      p.printStruct(decl);
     } else {
       p.line(p.renderVarDecl(decl) + ";", decl.line);
     }
@@ -141,13 +143,28 @@ class Printer {
   }
 
   printFunction(fn: N.FunctionDecl) {
-    const params = fn.params.map((p) => `${p.paramType.name} ${p.name}`).join(", ");
-    this.line(`${fn.visibility} function: ${fn.returnType.name} ${fn.name}(${params}) {`, fn.line);
+    const params = fn.params.map((p) => `${N.typeSpelling(p.paramType)} ${p.name}`).join(", ");
+    this.line(
+      `${fn.visibility} function: ${N.typeSpelling(fn.returnType)} ${fn.name}(${params}) {`,
+      fn.line
+    );
     this.depth++;
     this.printBody(fn.body);
     this.depth--;
     this.line("}");
     this.lastEndLine = fn.body.endLine;
+  }
+
+  /** One field per line, because a struct on one line is a dare. */
+  printStruct(decl: N.StructDecl) {
+    this.line(`struct ${decl.name} {`, decl.line);
+    this.depth++;
+    for (const f of decl.fields) {
+      this.line(`${N.typeSpelling(f.fieldType)} ${f.name};`, f.fieldType.line);
+    }
+    this.depth--;
+    this.line("}");
+    this.lastEndLine = decl.endLine;
   }
 
   printBody(block: N.Block) {
@@ -245,7 +262,9 @@ class Printer {
 
   renderVarDecl(stmt: N.VarDecl): string {
     const kw = stmt.isConst ? "const" : "let";
-    return `${kw}: ${stmt.varType.name} ${stmt.name}${stmt.init ? " = " + this.expr(stmt.init) : ""}`;
+    return `${kw}: ${N.typeSpelling(stmt.varType)} ${stmt.name}${
+      stmt.init ? " = " + this.expr(stmt.init) : ""
+    }`;
   }
 
   private expr(e: N.Expr): string {
@@ -291,9 +310,13 @@ class Printer {
       case "AssignExpr":
         return `${this.expr(e.target)} ${e.operator} ${this.expr(e.value)}`;
       case "CastExpr":
-        return `${this.sub(e.expr, PREC_POSTFIX)} -> ${e.targetType.name}`;
+        return `${this.sub(e.expr, PREC_POSTFIX)} -> ${N.typeSpelling(e.targetType)}`;
       case "IndexExpr":
         return `${this.sub(e.object, PREC_POSTFIX)}[${this.expr(e.index)}]`;
+      case "ArrayLiteral":
+        return `[${e.elements.map((el) => this.expr(el)).join(", ")}]`;
+      case "NewArrayExpr":
+        return `new ${N.typeSpelling(e.elemType)}[${this.expr(e.size)}]`;
     }
   }
 

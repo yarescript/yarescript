@@ -59,7 +59,7 @@ export function internalName(moduleName: string, fn: string): string {
  */
 export function linkModules(
   program: N.Program,
-  opts: { outDir: string; stdlib?: string }
+  opts: { outDir: string; stdlib?: string; write?: boolean }
 ): LinkReport {
   const dir = opts.stdlib ?? stdlibDir();
   const depBuildDir = path.join(opts.outDir, "dep", "build");
@@ -102,7 +102,12 @@ export function linkModules(
   for (const name of imported) {
     const source = fs.readFileSync(path.join(dir, `${name}.ys`), "utf8");
     const dep = buildDepFile(name, source);
-    const depPath = writeDepFile(depBuildDir, dep);
+    // `yare check` links without writing: it promises to emit nothing, and a
+    // .yare.dep file is definitely something.
+    const depPath =
+      opts.write === false
+        ? path.join(depBuildDir, `${dep.name}.yare.dep`)
+        : writeDepFile(depBuildDir, dep);
 
     const asked = [...wanted.get(name)!];
     const offered = dep.functions.map((f) => f.name);

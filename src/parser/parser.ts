@@ -57,6 +57,8 @@ export class Parser {
     while (!this.at(TokenType.EOF)) {
       if (this.at(TokenType.Import)) {
         body.push(this.parseImport());
+      } else if (this.at(TokenType.Struct)) {
+        body.push(this.parseStructDecl());
       } else if (this.at(TokenType.At)) {
         body.push(this.parseDirective());
       } else if (
@@ -107,6 +109,22 @@ export class Parser {
     throw new ParseError(`${message} (got '${t.value || t.type}')`, t.line, t.column);
   }
 
+  /** `struct Point { int x; int y; }`, fields in the order you wrote them. */
+  private parseStructDecl(): N.StructDecl {
+    const kw = this.expect(TokenType.Struct);
+    const name = this.expect(TokenType.Identifier, "Expected a name after 'struct'").value;
+    this.expect(TokenType.LBrace, `Expected '{' to open struct '${name}'`);
+    const fields: { name: string; fieldType: N.TypeNode }[] = [];
+    while (!this.at(TokenType.RBrace)) {
+      const fieldType = this.parseType();
+      const fname = this.expect(TokenType.Identifier, "Expected a field name").value;
+      this.expect(TokenType.Semicolon, `Expected ';' after field '${fname}'`);
+      fields.push({ name: fname, fieldType });
+    }
+    const close = this.expect(TokenType.RBrace);
+    return { kind: "StructDecl", name, fields, line: kw.line, endLine: close.line };
+  }
+
   private parseImport(): N.ImportDecl {
     const start = this.expect(TokenType.Import);
     const names: string[] = [];
@@ -133,7 +151,15 @@ export class Parser {
     const t = this.peek();
     if (t.type === TokenType.Identifier) {
       this.advance();
-      return { name: t.value, line: t.line, column: t.column };
+      // `int[]` is `int` with brackets on the end, and `int[][]` is an array of
+      // those. The brackets are part of the type, not part of the expression.
+      let dims = 0;
+      while (this.at(TokenType.LBracket) && this.peek(1).type === TokenType.RBracket) {
+        this.advance();
+        this.advance();
+        dims++;
+      }
+      return { name: t.value, dims, line: t.line, column: t.column };
     }
     throw new ParseError(`Expected a type name but got '${t.value || t.type}'`, t.line, t.column);
   }
@@ -438,6 +464,34 @@ export class Parser {
         const expr = this.parseExpr();
         this.expect(TokenType.RParen);
         return expr;
+      }
+      case TokenType.LBracket: {
+        // An array literal. `[]` on its own is refused rather than guessed at:
+        // an array with no elements and no declared type is not a type.
+        const bracket = this.advance();
+        const elements: N.Expr[] = [];
+        while (!this.at(TokenType.RBracket)) {
+          elements.push(this.parseExpr());
+          if (this.at(TokenType.Comma)) this.advance();
+        }
+        this.expect(TokenType.RBracket, "Expected ']' to close an array literal");
+        if (!elements.length) {
+          throw new ParseError(
+            "An empty array literal has no element type. Declare one: `let: int[] xs = new int[0];`",
+            bracket.line,
+            bracket.column
+          );
+        }
+        return { kind: "ArrayLiteral", elements, line: bracket.line };
+      }
+      case TokenType.New: {
+        // `new int[5]`: a sized array, zero filled, on the heap.
+        const kw = this.advance();
+        const elemType = this.parseType();
+        this.expect(TokenType.LBracket, `Expected '[' after 'new ${N.typeSpelling(elemType)}'`);
+        const size = this.parseExpr();
+        this.expect(TokenType.RBracket, "Expected ']' to close the array size");
+        return { kind: "NewArrayExpr", elemType, size, line: kw.line };
       }
       default:
         throw new ParseError(`Unexpected token '${t.value || t.type}' in expression`, t.line, t.column);

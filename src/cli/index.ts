@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import * as fs from "fs";
 import * as path from "path";
-import { build } from "../compiler";
+import { build, frontEnd } from "../compiler";
 import { defaultConfig, findConfig, loadConfig, writeConfig, DEFAULT_CONFIG_FILENAME } from "./config";
 import { LexError } from "../lexer/lexer";
 import { ParseError } from "../parser/parser";
-import { TypeError_ } from "../checker/checker";
-import { ModuleError, findSourceFiles } from "../modules/resolve";
+import { check, TypeError_ } from "../checker/checker";
+import { ModuleError, findSourceFiles, resolveModules } from "../modules/resolve";
 import { format } from "../fmt/formatter";
 import { runTestFile } from "../test-runner/runner";
 
@@ -17,6 +17,7 @@ function usage() {
 
 Usage:
   yare init [name]        Scaffold a new yarescript project (writes ${DEFAULT_CONFIG_FILENAME})
+  yare check              Type-check the project and emit nothing
   yare build [--wat]      Compile the project entry to WebAssembly + a tiny JS loader
   yare run [--wat]        Build, then execute the compiled program in Node
   yare fmt [--check]      Reformat every .ys file in the project (--check only reports)
@@ -64,6 +65,30 @@ function cmdInit(name?: string) {
 
   console.log(`Created ${DEFAULT_CONFIG_FILENAME} and ${config.entry}`);
   console.log(`Next: yare build`);
+}
+
+/**
+ * Type-checks the project and writes nothing at all. Useful in an editor, in a
+ * pre-commit hook, and in the two seconds before you wonder whether the thing
+ * you just wrote compiles.
+ */
+function cmdCheck() {
+  const { config, root } = loadProjectConfig();
+  try {
+    const front = frontEnd({ root, config, write: false });
+    const checked = front.checked;
+    const functions = [...checked.functions.values()];
+    const exported = functions.filter((f) => f.visibility === "public").length;
+    const extra = front.files.length - 1;
+    console.log(`Checked ${config.entry}${extra > 0 ? ` (+${extra} imported file${extra === 1 ? "" : "s"})` : ""}`);
+    console.log(`Functions: ${functions.length} (${exported} public)`);
+    if (checked.structs.size) {
+      console.log(`Structs:   ${[...checked.structs.keys()].join(", ")}`);
+    }
+    console.log("No type errors.");
+  } catch (err) {
+    reportCompileError(err);
+  }
 }
 
 function cmdBuild(flags: Set<string>) {
@@ -196,6 +221,9 @@ async function main() {
       break;
     case "run":
       await cmdRun(flags);
+      break;
+    case "check":
+      cmdCheck();
       break;
     case "fmt":
       cmdFmt(flags, positional);
