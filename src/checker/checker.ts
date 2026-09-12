@@ -1,17 +1,27 @@
 import * as N from "../ast/nodes";
-import { PRIMITIVES, isAssignable, isInteger, isNumeric, isValidType, widen, YType } from "./types";
+import {
+  INT_RANGE,
+  PRIMITIVES,
+  isAssignable,
+  isInteger,
+  isNumeric,
+  isValidType,
+  tryWiden,
+  YType,
+} from "./types";
 import { didYouMean, suggest } from "../diagnostics/suggest";
 
 /**
  * Names people reach for when they arrive from another language. A fuzzy match
- * cannot bridge "println" to "console.log", so the well-trodden paths get a
+ * cannot bridge "println" to "console.println", so the well-trodden paths get a
  * signpost instead.
  */
 const COMMON_ALIASES: Record<string, string> = {
-  println: "console.log",
-  print: "console.log",
-  printf: "console.log",
-  log: "console.log",
+  "console.log": "console.println",
+  log: "console.println",
+  print: "console.println",
+  printf: "console.println",
+  println: "console.println",
   number: "double",
   str: "string",
   boolean: "bool",
@@ -35,7 +45,7 @@ interface FunctionSig {
 }
 
 interface HostFunctionSig {
-  /** the name as called from yarescript, e.g. "console.log" */
+  /** the name as called from yarescript, e.g. "console.println" */
   qualifiedName: string;
   /** accepted argument type -> the concrete host import name to emit */
   overloads: Partial<Record<YType, string>>;
@@ -46,16 +56,22 @@ interface HostFunctionSig {
 // explicit `import`. Batteries included, but the loader stays tiny: each of
 // these compiles straight to a WASM host import instead of JS glue.
 export const HOST_FUNCTIONS: Record<string, HostFunctionSig> = {
-  "console.log": {
-    qualifiedName: "console.log",
+  "console.println": {
+    qualifiedName: "console.println",
     overloads: {
-      string: "console_log_string",
-      int: "console_log_int",
-      long: "console_log_long",
-      float: "console_log_float",
-      double: "console_log_double",
-      bool: "console_log_bool",
-      char: "console_log_char",
+      string: "console_println_string",
+      bool: "console_println_bool",
+      char: "console_println_char",
+      i8: "console_println_int",
+      i16: "console_println_int",
+      int: "console_println_int",
+      u8: "console_println_uint",
+      u16: "console_println_uint",
+      u32: "console_println_uint",
+      long: "console_println_long",
+      u64: "console_println_ulong",
+      float: "console_println_float",
+      double: "console_println_double",
     },
     returnType: "void",
   },
@@ -190,6 +206,54 @@ export class Checker {
     }
   }
 
+  /**
+   * A literal is allowed to land in any integer type it fits, including the
+   * unsigned ones, so `let: u8 b = 200;` is not an error. Nothing else gets
+   * that courtesy; a variable of type int is not secretly a u8.
+   */
+  private checkExprAs(expr: N.Expr, scope: Scope, target: YType): YType {
+    const t = this.checkExpr(expr, scope);
+    if (isAssignable(t, target)) return t;
+    const range = INT_RANGE[target];
+    if (range) {
+      const value = literalValueOf(expr);
+      if (value !== null) {
+        if (value < range[0] || value > range[1]) {
+          throw new TypeError_(
+            `${value} is out of range for '${target}' (it takes ${range[0]} to ${range[1]})`,
+            expr.line
+          );
+        }
+        // keep the inner literal in the target type too, so a negated one is
+        // subtracted in the right width rather than in plain int
+        if (expr.kind === "UnaryExpr") {
+          (expr.argument as N.IntLiteral).inferredType = target;
+        }
+        expr.inferredType = target;
+        return target;
+      }
+    }
+    return t;
+  }
+
+  /**
+   * A bare number literal borrows the type of its neighbour, so
+   * `let: u8 i = 0; i = i + 2;` is arithmetic rather than a debate about
+   * signedness. If the number does not fit, that is worth saying out loud.
+   */
+  private adoptLiteral(literal: N.Expr, nextTo: YType): YType | null {
+    if (literal.kind !== "IntLiteral" || !isInteger(nextTo)) return null;
+    const range = INT_RANGE[nextTo];
+    if (!range || literal.value < range[0] || literal.value > range[1]) {
+      throw new TypeError_(
+        `${literal.value} is out of range for '${nextTo}'. Widen the other operand or use a cast.`,
+        literal.line
+      );
+    }
+    literal.inferredType = nextTo;
+    return nextTo;
+  }
+
   private checkVarDecl(decl: N.VarDecl, scope: Scope) {
     if (!isValidType(decl.varType.name)) {
       throw new TypeError_(
@@ -199,7 +263,7 @@ export class Checker {
     }
     const declType = decl.varType.name as YType;
     if (decl.init) {
-      const initType = this.checkExpr(decl.init, scope);
+      const initType = this.checkExprAs(decl.init, scope, declType);
       if (!isAssignable(initType, declType)) {
         throw new TypeError_(
           `Cannot assign '${initType}' to '${declType}' variable '${decl.name}'`,
@@ -234,7 +298,7 @@ export class Checker {
         return false;
       case "ReturnStmt": {
         if (stmt.argument) {
-          const t = this.checkExpr(stmt.argument, scope);
+          const t = this.checkExprAs(stmt.argument, scope, expectedReturn);
           if (!isAssignable(t, expectedReturn)) {
             throw new TypeError_(
               `Cannot return '${t}' from a function declared to return '${expectedReturn}'`,
@@ -386,8 +450,13 @@ export class Checker {
         return target;
       }
       case "BinaryExpr": {
-        const lt = this.checkExpr(expr.left, scope);
-        const rt = this.checkExpr(expr.right, scope);
+        let lt = this.checkExpr(expr.left, scope);
+        let rt = this.checkExpr(expr.right, scope);
+        // a bare number takes the type of whatever it is standing next to
+        const adoptedLeft = this.adoptLiteral(expr.left, rt);
+        if (adoptedLeft) lt = adoptedLeft;
+        const adoptedRight = this.adoptLiteral(expr.right, lt);
+        if (adoptedRight) rt = adoptedRight;
         const comparisons = new Set(["==", "!=", "<", ">", "<=", ">="]);
         const logical = new Set(["&&", "||"]);
         if (logical.has(expr.operator)) {
@@ -429,7 +498,13 @@ export class Checker {
         if (!isNumeric(lt) || !isNumeric(rt)) {
           throw new TypeError_(`'${expr.operator}' requires numeric operands, got '${lt}' and '${rt}'`, expr.line);
         }
-        const result = widen(lt, rt);
+        const result = tryWiden(lt, rt);
+        if (!result) {
+          throw new TypeError_(
+            `Cannot use '${expr.operator}' on '${lt}' and '${rt}': one is signed and the other is not. Cast one of them.`,
+            expr.line
+          );
+        }
         expr.inferredType = result;
         return result;
       }
@@ -440,7 +515,7 @@ export class Checker {
         const v = scope.lookup(expr.target.name);
         if (!v) throw new TypeError_(`Unknown identifier '${expr.target.name}'`, expr.line);
         if (v.isConst) throw new TypeError_(`Cannot assign to const '${expr.target.name}'`, expr.line);
-        const valueType = this.checkExpr(expr.value, scope);
+        const valueType = this.checkExprAs(expr.value, scope, v.type);
         if (expr.operator !== "=" && !isNumeric(v.type)) {
           throw new TypeError_(`'${expr.operator}' requires a numeric variable`, expr.line);
         }
@@ -478,7 +553,7 @@ export class Checker {
             );
           }
           expr.args.forEach((arg, idx) => {
-            const t = this.checkExpr(arg, scope);
+            const t = this.checkExprAs(arg, scope, sig.params[idx]);
             if (!isAssignable(t, sig.params[idx])) {
               throw new TypeError_(
                 `Argument ${idx + 1} of '${calleeName}': expected '${sig.params[idx]}', got '${t}'`,
@@ -514,7 +589,7 @@ export class Checker {
     const alias = COMMON_ALIASES[name.toLowerCase()];
     if (alias) return ` Did you mean '${alias}'?`;
     // 'prntln' is one keystroke from 'println', which is itself a signpost to
-    // console.log, so a near miss on the alias still gets you there.
+    // console.println, so a near miss on the alias still gets you there.
     const nearAlias = suggest(name, Object.keys(COMMON_ALIASES));
     if (nearAlias) return ` Did you mean '${COMMON_ALIASES[nearAlias]}'?`;
     return didYouMean(name, [...this.functions.keys(), ...Object.keys(HOST_FUNCTIONS)]);
@@ -533,6 +608,19 @@ export class Checker {
     const base = expr.object.kind === "Identifier" ? expr.object.name : "<expr>";
     return `${base}.${expr.property}`;
   }
+}
+
+/**
+ * The value of a literal, including the ones written with a minus in front.
+ * `-128` arrives as a unary expression on the number 128, which is a fine way
+ * to parse it and a poor way to range check it.
+ */
+function literalValueOf(expr: N.Expr): number | null {
+  if (expr.kind === "IntLiteral") return expr.value;
+  if (expr.kind === "UnaryExpr" && expr.operator === "-" && expr.argument.kind === "IntLiteral") {
+    return -expr.argument.value;
+  }
+  return null;
 }
 
 export function check(program: N.Program): CheckedProgram {

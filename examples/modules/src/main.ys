@@ -1,11 +1,11 @@
 import { square, sumTo, shout } from "./math.ys";
 
 public function: void main() {
-    console.log(square(12));
-    console.log(sumTo(10));
-    console.log(shout("modules work"));
+    console.println(square(12));
+    console.println(sumTo(10));
+    console.println(shout("modules work"));
     // Narrowing is explicit in yarescript, so the arrow is where you promise
     // you are fine with losing the bit after the decimal point.
     let: double ratio = 7 / 2 -> double;
-    console.log(ratio);
+    console.println(ratio);
 }

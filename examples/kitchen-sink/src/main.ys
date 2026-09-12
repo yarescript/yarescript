@@ -26,19 +26,42 @@ public function: double average(double a, double b) {
     return (a + b) / two;
 }
 
+// The narrow and unsigned widths, wrapping exactly where their width says
+// they should. None of this is a trick: an i8 at 127 has one place to go.
+public function: void wrapDemo() {
+    let: i8 signed8 = 127;
+    signed8++;
+    let: u8 byte = 250;
+    byte = byte + 10;
+    let: u16 small = 65535;
+    small++;
+    let: u32 big = 4000000000;
+    let: u64 huge = 0;
+    huge = huge - 1;
+    let: i16 half = 30000;
+    half = half + 10000;
+    console.println(signed8);
+    console.println(byte);
+    console.println(small);
+    console.println(big > 1);
+    console.println(huge);
+    console.println(half);
+}
+
 public function: void main() {
-    console.log("yarescript kitchen sink");
+    console.println("yarescript kitchen sink");
+    wrapDemo();
     let: int fibResult = fib(10);
-    console.log(fibResult);
+    console.println(fibResult);
     let: int total = sumTo(100);
-    console.log(total);
-    console.log(isEven(total));
+    console.println(total);
+    console.println(isEven(total));
     let: double avg = average(3.5, 4.5);
-    console.log(avg);
+    console.println(avg);
     let: int counter = 0;
     while (counter < 5) {
-        console.log(counter);
+        console.println(counter);
         counter = counter + 1;
     }
-    console.log("done");
+    console.println("done");
 }

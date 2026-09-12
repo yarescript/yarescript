@@ -129,6 +129,17 @@ They are also the fastest way to find out a language feature is missing.
   `__yare_str_alloc`, `__yare_str_concat`, and `__yare_str_eq` into modules
   that use string operators, and the checker rejects user functions with that
   prefix.
+- **Thirteen types ride on four WebAssembly kinds.** The narrow ones (`i8`,
+  `i16`, `u8`, `u16`) live in an `i32` and are clamped by `normalize()` in
+  `src/codegen/codegen.ts` on every write, including `++` and `--`. The
+  unsigned ones share a kind with their signed twin and differ only in the
+  instruction `binOps()` picks: `div_u`, `lt_u`, and friends. Add a type in
+  `src/checker/types.ts` and those two functions are where it quietly breaks
+  if you forget them.
+- **A bare number literal borrows the type beside it.** `Checker.adoptLiteral`
+  is what lets `i + 2` typecheck on a `u8`, and `checkExprAs` is what lets
+  `let: u8 m = 200;` typecheck at all, since `int` is not assignable to `u8`.
+  Both consult `INT_RANGE`, the only place the bounds live.
 - **Strings are a `u32` length followed by UTF-8 bytes**, and the heap is a
   bump allocator starting right after the string table. There is no collector
   yet, so a program that concatenates in a loop grows memory until the host
@@ -149,8 +160,7 @@ They are also the fastest way to find out a language feature is missing.
 
 ## Not implemented yet
 
-The narrow and unsigned numeric widths (`u8` through `u64`, `i8`, `i16`),
-structs, generics, arrays, a garbage collector, source maps, a WASI target, an
+Structs, generics, arrays, a garbage collector, source maps, a WASI target, an
 editor extension, a real registry behind `libs` in `config.yare`, parsing json
 and xml and toml documents rather than building them, and publishing to npm.
 The current list lives in `ROADMAP.md`, which is the file to update when any of

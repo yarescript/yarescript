@@ -48,13 +48,15 @@ export async function runTestFile(file: string): Promise<TestResult[]> {
   };
 
   const env: Record<string, (...args: any[]) => any> = {
-    console_log_string: (ptr: number) => console.log(readString(ptr)),
-    console_log_int: (v: number) => console.log(v),
-    console_log_long: (v: bigint) => console.log(v.toString()),
-    console_log_float: (v: number) => console.log(v),
-    console_log_double: (v: number) => console.log(v),
-    console_log_bool: (v: number) => console.log(Boolean(v)),
-    console_log_char: (v: number) => console.log(String.fromCharCode(v)),
+    console_println_string: (ptr: number) => console.log(readString(ptr)),
+    console_println_int: (v: number) => console.log(v),
+    console_println_uint: (v: number) => console.log(v >>> 0),
+    console_println_long: (v: bigint) => console.log(v.toString()),
+    console_println_ulong: (v: bigint) => console.log((v < 0n ? v + (1n << 64n) : v).toString()),
+    console_println_float: (v: number) => console.log(v),
+    console_println_double: (v: number) => console.log(v),
+    console_println_bool: (v: number) => console.log(Boolean(v)),
+    console_println_char: (v: number) => console.log(String.fromCharCode(v)),
     assert: (v: number) => {
       if (!v) throw new Error("assertion failed");
     },

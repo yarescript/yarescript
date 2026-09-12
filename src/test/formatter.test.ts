@@ -32,7 +32,7 @@ public function: void main() {
 });
 
 test("formatting twice changes nothing", () => {
-  const src = `public function: void main(){if(1==1){console.log("a");}else{console.log("b");}while(0>1){}}`;
+  const src = `public function: void main(){if(1==1){console.println("a");}else{console.println("b");}while(0>1){}}`;
   const once = format(src, "t.ys");
   assert.strictEqual(format(once, "t.ys"), once);
 });
@@ -48,7 +48,7 @@ test("parentheses that change meaning survive", () => {
 });
 
 test("two minus signs never become a decrement", () => {
-  const src = `public function: void main() { let: int i = 1; console.log(- -i); }`;
+  const src = `public function: void main() { let: int i = 1; console.println(- -i); }`;
   const out = format(src, "t.ys");
   assert.match(out, /-\(-i\)/);
   assert.doesNotMatch(out, /--i/);
@@ -62,7 +62,7 @@ public function: void main() {
     let: int x = 1;  // trailing
 
     /* block */
-    console.log(x);
+    console.println(x);
 }
 `;
   const out = format(src, "t.ys");
@@ -84,7 +84,7 @@ test("a blank line between statements is kept", () => {
 });
 
 test("floats keep their decimal point", () => {
-  const src = `public function: void main() { const: double two = 2.0; console.log(two); }`;
+  const src = `public function: void main() { const: double two = 2.0; console.println(two); }`;
   assert.match(format(src, "t.ys"), /const: double two = 2\.0;/);
 });
 
@@ -99,17 +99,17 @@ test("a formatted program behaves exactly like the original", async () => {
       return (a + b) / two;
     }
     public function: void main() {
-      console.log(fib(10));
-      console.log(average(3.5, 4.5));
-      console.log(2 * (3 + 4) - 10 / (1 + 1));
+      console.println(fib(10));
+      console.println(average(3.5, 4.5));
+      console.println(2 * (3 + 4) - 10 / (1 + 1));
       let: string s = "a" + "b";
-      console.log(s);
-      console.log(s == "ab");
+      console.println(s);
+      console.println(s == "ab");
       let: int n = 3.99 -> int;
-      console.log(n);
+      console.println(n);
       let: int i = 0;
       while (i < 3) { i++; }
-      console.log(i);
+      console.println(i);
     }
   `;
   const before = await compileAndRun(src);

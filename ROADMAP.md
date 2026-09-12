@@ -28,14 +28,14 @@ These used to be on this list and are now in the compiler, documented in
 - `.yare/` build output with `config-lock.yare` and `dep/build/*.yare.dep`
   object files. Import a module you never call and none of it is linked.
 - Error messages that suggest the name you were reaching for.
+- The whole numeric ladder. `i8`, `i16`, `u8`, `u16`, `u32`, and `u64` join
+  `char`, `int`, `long`, `float`, and `double`: thirteen types, with narrow
+  values wrapping the way their width says, unsigned values comparing
+  unsigned, and signed meeting unsigned only where you write a cast.
 - Apache License 2.0.
 
 ## Near-term (language completeness)
 
-- [ ] The rest of the numeric ladder: `u8`, `u16`, `u32`, `u64`, `i8`, and
-      `i16`. `char`, `int`, `long`, `float`, and `double` are here; the narrow
-      and unsigned widths are not, and "every type from low level to high
-      level" is not true until they are.
 - [ ] Arrays (`int[]`, `string[]`, ...) and a fixed-size struct/record
       type for "high level" data, not just scalars.
 - [ ] Real json, xml, and toml documents. The `json` module can build json
@@ -46,7 +46,7 @@ These used to be on this list and are now in the compiler, documented in
 - [ ] Ordering comparisons on strings, once there is a collation answer
       worth defending.
 - [ ] Member access on real values (`point.x`, `items.length`), which today
-      only exists as the `console.log` call path.
+      only exists as the `console.println` call path.
 - [ ] Compound assignment and `++`/`--` on anything other than a plain
       variable.
 
@@ -69,7 +69,7 @@ These used to be on this list and are now in the compiler, documented in
 - [ ] A real allocator. Strings currently come from a bump allocator with no
       collector, so a loop that concatenates keeps every intermediate string
       alive. This is the first thing that will hurt a real program.
-- [ ] Expand the host-function surface beyond `console.log` and `assert`
+- [ ] Expand the host-function surface beyond `console.println` and `assert`
       (timers, fetch/network, DOM interop for browser targets) while keeping
       the loader generation logic table-driven and tiny.
 - [ ] WASI target for standalone/server-side execution outside Node.

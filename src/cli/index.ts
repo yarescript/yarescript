@@ -58,7 +58,7 @@ function cmdInit(name?: string) {
   if (!fs.existsSync(entryFile)) {
     fs.writeFileSync(
       entryFile,
-      `public function: void main() {\n    console.log("hello, world");\n}\n`
+      `public function: void main() {\n    console.println("hello, world");\n}\n`
     );
   }
 

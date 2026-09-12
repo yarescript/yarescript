@@ -25,7 +25,7 @@ test("the bundled modules are all there", () => {
 test("only the functions you call get linked", () => {
   const { modules } = link(`
     @modules.import("str");
-    public function: void main() { console.log(str.upper("hi")); }
+    public function: void main() { console.println(str.upper("hi")); }
   `);
   const str = modules.find((m) => m.name === "str")!;
   assert.deepStrictEqual(str.linked, ["upper"]);
@@ -36,7 +36,7 @@ test("importing a module you never call links nothing from it", () => {
   const { modules } = link(`
     @modules.import("json");
     @modules.import("str");
-    public function: void main() { console.log(str.length("hi")); }
+    public function: void main() { console.println(str.length("hi")); }
   `);
   const json = modules.find((m) => m.name === "json")!;
   assert.deepStrictEqual(json.linked, []);
@@ -45,7 +45,7 @@ test("importing a module you never call links nothing from it", () => {
 test("a function that calls a sibling pulls it in too", () => {
   const { modules } = link(`
     @modules.import("str");
-    public function: void main() { console.log(str.contains("abc", "b")); }
+    public function: void main() { console.println(str.contains("abc", "b")); }
   `);
   const str = modules.find((m) => m.name === "str")!;
   assert.ok(str.linked.includes("contains"));
@@ -55,7 +55,7 @@ test("a function that calls a sibling pulls it in too", () => {
 test("the dep file is a real object file with an index", () => {
   const { modules, outDir } = link(`
     @modules.import("math");
-    public function: void main() { console.log(math.abs(1)); }
+    public function: void main() { console.println(math.abs(1)); }
   `);
   const dep = readDepFile(modules[0].depPath);
   assert.strictEqual(dep.magic, DEP_MAGIC);
@@ -70,10 +70,10 @@ test("linked module code really runs", async () => {
     @modules.import("str");
     @modules.import("math");
     public function: void main() {
-      console.log(str.upper("yare"));
-      console.log(str.reverse("abc"));
-      console.log(math.pow(2, 8));
-      console.log(math.sqrt(81.0));
+      console.println(str.upper("yare"));
+      console.println(str.reverse("abc"));
+      console.println(math.pow(2, 8));
+      console.println(math.sqrt(81.0));
     }
   `);
   const { logs } = await runProgram(program);
@@ -83,7 +83,7 @@ test("linked module code really runs", async () => {
 test("an unknown module is reported with the alternatives", () => {
   assert.throws(
     () => link(`@modules.import("jsonn");
-      public function: void main() { console.log(1); }`),
+      public function: void main() { console.println(1); }`),
     (e: Error) => e instanceof ModuleError && /Did you mean 'json'\?/.test(e.message)
   );
 });
@@ -91,7 +91,7 @@ test("an unknown module is reported with the alternatives", () => {
 test("an unknown function in a known module is reported", () => {
   assert.throws(
     () => link(`@modules.import("str");
-      public function: void main() { console.log(str.uppr("x")); }`),
+      public function: void main() { console.println(str.uppr("x")); }`),
     /has no function 'uppr'.*Did you mean 'upper'\?/s
   );
 });
@@ -99,7 +99,7 @@ test("an unknown function in a known module is reported", () => {
 test("an unknown directive is reported", () => {
   assert.throws(
     () => link(`@moduls.import("str");
-      public function: void main() { console.log(1); }`),
+      public function: void main() { console.println(1); }`),
     /Unknown directive '@moduls'/
   );
 });

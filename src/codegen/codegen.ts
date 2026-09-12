@@ -1,14 +1,14 @@
 import binaryen = require("binaryen");
 import * as N from "../ast/nodes";
 import { CheckedProgram, HOST_FUNCTIONS } from "../checker/checker";
-import { isNumeric, widen, YType } from "../checker/types";
+import { isNumeric, isSigned, widen, YType } from "../checker/types";
 
 /**
  * Lowers a type-checked yarescript AST straight to a WebAssembly module
  * using binaryen. This is the whole point of the language: no JS emitted
  * here, ever. The only JS yarescript produces is the tiny host-side loader
  * (see src/runtime/loader-template.ts) that instantiates this module and hands it
- * a handful of host functions (console.log, etc).
+ * a handful of host functions (console.println, etc).
  *
  * If you ever find this file emitting JavaScript, stop reading and file a bug:
  * that is the one promise the language makes, and it does not get to be
@@ -19,11 +19,17 @@ const PAGE_SIZE = 65536;
 
 function wasmType(t: YType): number {
   switch (t) {
+    // the narrow integers all ride in an i32; the masks below keep them honest
+    case "i8":
+    case "i16":
+    case "u8":
+    case "u16":
+    case "u32":
     case "int":
-      return binaryen.i32;
     case "bool":
       return binaryen.i32;
     case "long":
+    case "u64":
       return binaryen.i64;
     case "float":
       return binaryen.f32;
@@ -139,7 +145,7 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
     return offset;
   }
 
-  // ---- Host imports (console.log overloads etc.) ----
+  // ---- Host imports (console.println overloads etc.) ----
   function importHostFunction(name: string, params: number[], result: number) {
     if (usedHostFunctions.has(name)) return;
     usedHostFunctions.add(name);
@@ -235,10 +241,38 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   // Casts. WebAssembly has an instruction for every one of these, so a cast
   // costs one opcode and zero apologies.
   // ------------------------------------------------------------------
+  /**
+   * Every value lands in a type that may be narrower than the wasm register
+   * holding it, so the last step of any cast is putting it back in range.
+   * Without this an i8 quietly carries 200 around until the first comparison.
+   */
+  function normalize(t: YType, value: number): number {
+    switch (t) {
+      case "i8":
+        return mod.i32.extend8_s(value);
+      case "i16":
+        return mod.i32.extend16_s(value);
+      case "u8":
+        return mod.i32.and(value, mod.i32.const(0xff));
+      case "u16":
+        return mod.i32.and(value, mod.i32.const(0xffff));
+      default:
+        return value;
+    }
+  }
+
   function castTo(target: YType, from: YType, value: number): number {
-    if (from === target) return value;
+    const converted = from === target ? value : convertKind(from, target, value);
+    return normalize(target, converted);
+  }
+
+  function convertKind(from: YType, to: YType, value: number): number {
     const src = wasmKind(from);
-    const dst = wasmKind(target);
+    const dst = wasmKind(to);
+    // unsigned sources convert differently on the way out, and WebAssembly
+    // is fussy about which flavour you picked
+    const signed = isSigned(from);
+    if (src === dst) return value;
     if (dst === "i32") {
       if (src === "i32") return value;
       if (src === "i64") return mod.i32.wrap(value);
@@ -246,19 +280,19 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
       return mod.i32.trunc_s.f64(value);
     }
     if (dst === "i64") {
-      if (src === "i32") return mod.i64.extend_s(value);
+      if (src === "i32") return signed ? mod.i64.extend_s(value) : mod.i64.extend_u(value);
       if (src === "i64") return value;
-      if (src === "f32") return mod.i64.trunc_s.f32(value);
-      return mod.i64.trunc_s.f64(value);
+      if (src === "f32") return signed ? mod.i64.trunc_s.f32(value) : mod.i64.trunc_u.f32(value);
+      return signed ? mod.i64.trunc_s.f64(value) : mod.i64.trunc_u.f64(value);
     }
     if (dst === "f32") {
-      if (src === "i32") return mod.f32.convert_s.i32(value);
-      if (src === "i64") return mod.f32.convert_s.i64(value);
+      if (src === "i32") return signed ? mod.f32.convert_s.i32(value) : mod.f32.convert_u.i32(value);
+      if (src === "i64") return signed ? mod.f32.convert_s.i64(value) : mod.f32.convert_u.i64(value);
       if (src === "f32") return value;
       return mod.f32.demote(value);
     }
-    if (src === "i32") return mod.f64.convert_s.i32(value);
-    if (src === "i64") return mod.f64.convert_s.i64(value);
+    if (src === "i32") return signed ? mod.f64.convert_s.i32(value) : mod.f64.convert_u.i32(value);
+    if (src === "i64") return signed ? mod.f64.convert_s.i64(value) : mod.f64.convert_u.i64(value);
     if (src === "f32") return mod.f64.promote(value);
     return value;
   }
@@ -272,7 +306,7 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   }
 
   function wasmKind(t: YType): "i32" | "i64" | "f32" | "f64" {
-    if (t === "long") return "i64";
+    if (t === "long" || t === "u64") return "i64";
     if (t === "float") return "f32";
     if (t === "double") return "f64";
     return "i32"; // int, char, bool and string pointers all live in an i32
@@ -559,8 +593,12 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
 
   function compileExpr(expr: N.Expr, scope: FunctionScope): number {
     switch (expr.kind) {
-      case "IntLiteral":
-        return expr.inferredType === "long" ? i64Const(expr.value) : mod.i32.const(expr.value);
+      case "IntLiteral": {
+        if (expr.inferredType === "long" || expr.inferredType === "u64") return i64Const(expr.value);
+        // a u32 above 2^31 has to be handed over with the same bits, and
+        // binaryen's i32.const reads a signed number
+        return mod.i32.const(expr.inferredType === "u32" ? expr.value | 0 : expr.value);
+      }
       case "FloatLiteral":
         return mod.f64.const(expr.value);
       case "BoolLiteral":
@@ -631,7 +669,8 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
           const info = scope.lookup(expr.argument.name);
           const one = one_(t);
           const newVal = arith(t, expr.operator === "++" ? "add" : "sub", mod.local.get(info.index, wasmType(t)), one);
-          const setOp = mod.local.set(info.index, newVal);
+          // an i8 at 127 that increments has to come back as -128, not 128
+          const setOp = mod.local.set(info.index, normalize(t, newVal));
           if (expr.prefix) {
             return (mod.block as any)(null, [setOp, mod.local.get(info.index, wasmType(t))], wasmType(t));
           }
@@ -689,14 +728,14 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   }
 
   function zero(t: YType): number {
-    if (t === "long") return mod.i64.const(0, 0);
+    if (t === "long" || t === "u64") return mod.i64.const(0, 0);
     if (t === "float") return mod.f32.const(0);
     if (t === "double") return mod.f64.const(0);
     return mod.i32.const(0);
   }
 
   function one_(t: YType): number {
-    if (t === "long") return mod.i64.const(1, 0);
+    if (t === "long" || t === "u64") return mod.i64.const(1, 0);
     if (t === "float") return mod.f32.const(1);
     if (t === "double") return mod.f64.const(1);
     return mod.i32.const(1);
@@ -770,7 +809,39 @@ export function generateWasm(checked: CheckedProgram): CompileResult {
   }
 
   function binOps(t: YType) {
-    if (t === "int" || t === "bool" || t === "char") {
+    // the narrow signed types all share int's instructions; normalize() keeps
+    // their results inside the type after the fact
+    if (t === "u8" || t === "u16" || t === "u32") {
+      return {
+        add: mod.i32.add,
+        sub: mod.i32.sub,
+        mul: mod.i32.mul,
+        div: mod.i32.div_u,
+        rem: mod.i32.rem_u,
+        eq: mod.i32.eq,
+        ne: mod.i32.ne,
+        lt: mod.i32.lt_u,
+        gt: mod.i32.gt_u,
+        le: mod.i32.le_u,
+        ge: mod.i32.ge_u,
+      };
+    }
+    if (t === "u64") {
+      return {
+        add: mod.i64.add,
+        sub: mod.i64.sub,
+        mul: mod.i64.mul,
+        div: mod.i64.div_u,
+        rem: mod.i64.rem_u,
+        eq: mod.i64.eq,
+        ne: mod.i64.ne,
+        lt: mod.i64.lt_u,
+        gt: mod.i64.gt_u,
+        le: mod.i64.le_u,
+        ge: mod.i64.ge_u,
+      };
+    }
+    if (t === "i8" || t === "i16" || t === "int" || t === "bool" || t === "char") {
       return {
         add: mod.i32.add,
         sub: mod.i32.sub,

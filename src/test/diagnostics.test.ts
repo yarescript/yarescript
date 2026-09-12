@@ -24,13 +24,13 @@ test("suggest gives up when nothing is close", () => {
   assert.strictEqual(suggest("aple", ["apple"]), "apple");
 });
 
-test("a mistyped print points at console.log", () => {
-  assert.match(errorFor(`public function: void main() { prntln("hi"); }`), /console\.log/);
-  assert.match(errorFor(`public function: void main() { println("hi"); }`), /console\.log/);
+test("a mistyped print points at console.println", () => {
+  assert.match(errorFor(`public function: void main() { prntln("hi"); }`), /console\.println/);
+  assert.match(errorFor(`public function: void main() { println("hi"); }`), /console\.println/);
 });
 
 test("a mistyped variable is suggested from scope", () => {
-  const msg = errorFor(`public function: void main() { let: int total = 1; console.log(totl); }`);
+  const msg = errorFor(`public function: void main() { let: int total = 1; console.println(totl); }`);
   assert.match(msg, /Did you mean 'total'\?/);
 });
 
@@ -42,7 +42,7 @@ test("a mistyped type is suggested", () => {
 test("a mistyped function name is suggested", () => {
   const msg = errorFor(`
     public function: int fibb(int n) { return n; }
-    public function: void main() { console.log(fib(3)); }
+    public function: void main() { console.println(fib(3)); }
   `);
   assert.match(msg, /Did you mean 'fibb'\?/);
 });

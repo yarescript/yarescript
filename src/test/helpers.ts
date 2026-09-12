@@ -5,7 +5,7 @@ import * as N from "../ast/nodes";
 
 /**
  * Runs a yarescript source string through the full pipeline and executes the
- * resulting WebAssembly module, capturing whatever it logs via console.log so
+ * resulting WebAssembly module, capturing whatever it prints via console.println
  * tests can assert on real program output rather than on the fact that it
  * compiled. Compiling is the easy half.
  */
@@ -32,13 +32,15 @@ export async function runProgram(
   };
 
   const env: Record<string, (...args: any[]) => any> = {
-    console_log_string: (ptr: number) => logs.push(readString(ptr)),
-    console_log_int: (v: number) => logs.push(String(v)),
-    console_log_long: (v: bigint) => logs.push(String(v)),
-    console_log_float: (v: number) => logs.push(String(v)),
-    console_log_double: (v: number) => logs.push(String(v)),
-    console_log_bool: (v: number) => logs.push(String(Boolean(v))),
-    console_log_char: (v: number) => logs.push(String.fromCharCode(v)),
+    console_println_string: (ptr: number) => logs.push(readString(ptr)),
+    console_println_int: (v: number) => logs.push(String(v)),
+    console_println_uint: (v: number) => logs.push(String(v >>> 0)),
+    console_println_long: (v: bigint) => logs.push(String(v)),
+    console_println_ulong: (v: bigint) => logs.push(String(v < 0n ? v + (1n << 64n) : v)),
+    console_println_float: (v: number) => logs.push(String(v)),
+    console_println_double: (v: number) => logs.push(String(v)),
+    console_println_bool: (v: number) => logs.push(String(Boolean(v))),
+    console_println_char: (v: number) => logs.push(String.fromCharCode(v)),
     assert: (v: number) => {
       if (!v) throw new Error("assertion failed");
     },

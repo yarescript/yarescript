@@ -24,23 +24,69 @@ yarescript is statically typed. Every variable, parameter, and function
 return value has an explicit primitive type. There is no inference on
 declarations, and there is no `any`.
 
-| Type     | WebAssembly representation                     | Notes |
-|----------|-------------------------------------------------|-------|
-| `void`   | (no value)                                      | only valid as a function return type |
-| `bool`   | `i32` (0 or 1)                                  | |
-| `char`   | `i32`                                           | one code unit, printed as a letter |
-| `int`    | `i32`                                           | 32-bit signed integer |
-| `long`   | `i64`                                           | 64-bit signed integer |
-| `float`  | `f32`                                           | 32-bit float |
-| `double` | `f64`                                           | 64-bit float |
-| `string` | `i32` pointer into linear memory                | length-prefixed UTF-8: `[u32 length][bytes...]` |
+| Type     | WebAssembly representation       | Range and notes |
+|----------|----------------------------------|-----------------|
+| `void`   | (no value)                       | only valid as a function return type |
+| `bool`   | `i32` (0 or 1)                   | |
+| `i8`     | `i32`                            | 8-bit signed, `-128` to `127` |
+| `i16`    | `i32`                            | 16-bit signed, `-32768` to `32767` |
+| `char`   | `i32`                            | one 16-bit code unit, `0` to `65535`, printed as a letter |
+| `int`    | `i32`                            | 32-bit signed |
+| `long`   | `i64`                            | 64-bit signed |
+| `u8`     | `i32`                            | 8-bit unsigned, `0` to `255` |
+| `u16`    | `i32`                            | 16-bit unsigned, `0` to `65535` |
+| `u32`    | `i32`                            | 32-bit unsigned, `0` to `4294967295` |
+| `u64`    | `i64`                            | 64-bit unsigned |
+| `float`  | `f32`                            | 32-bit float |
+| `double` | `f64`                            | 64-bit float |
+| `string` | `i32` pointer into linear memory | length-prefixed UTF-8: `[u32 length][bytes...]` |
 
-Numeric types widen implicitly in one direction only:
-`char -> int -> long -> float -> double`. Widening happens on its own in
-declarations, assignments, returns, and mixed arithmetic, so `let: double x = 1;`
-and `1 + 2.5` both do the sensible thing.
+The narrow types all live in a full WebAssembly register and are put back in
+range on every write, so an `i8` holding 200 is not something that can happen
+by accident.
 
-Narrowing never happens by accident. It needs an explicit cast.
+### Families and widening
+
+The numeric types come in three families, and widening only ever happens
+inside one:
+
+```
+signed     i8 -> i16 -> char -> int -> long
+unsigned   u8 -> u16 -> u32 -> u64
+floating   float -> double
+```
+
+- Widening inside a family is implicit, in declarations, assignments, returns,
+  and mixed arithmetic: `let: long big = 5;` and `1 + 2.5` both do the
+  sensible thing.
+- Any integer type widens to `float` or `double` implicitly, because that is
+  the one conversion nobody ever wants to be told about.
+- Narrowing never happens by accident. It needs an explicit cast: `x -> i8`.
+- Signed and unsigned do not mix without a cast. `let: u16 a = 1; a + total`,
+  where `total` is an `int`, is an error that tells you to cast one of them.
+- Unsigned values compare unsigned, so `let: u32 big = 4000000000; big > 1`
+  is true, which is the only correct answer for a `u32`.
+- Narrow values wrap, because that is what their width means: `let: u8 a = 250;
+  a = a + 10;` leaves 4 in `a`, and `let: i8 b = 100; b = b + 100;` leaves
+  `-56` in `b`.
+
+### Literals
+
+A bare number is an `int`, or a `long` when it is too big for one. Where you
+write it next to a narrower type it takes that type instead:
+
+```
+let: u8 mask = 200;          // fine, 200 fits in a u8
+let: i8 low = -128;          // fine, and -128 is the smallest i8 there is
+let: u8 tooBig = 256;        // error: 256 is out of range for 'u8' (it takes 0 to 255)
+
+let: u8 i = 0;
+i = i + 2;                   // the 2 borrows the u8, so this is u8 arithmetic
+i = i + 300;                 // error: 300 is out of range for 'u8'
+```
+
+`console.println` has an overload for every type in the table, so any of them
+can be printed as-is.
 
 ## Casts
 
@@ -156,9 +202,9 @@ reading your neighbour's bytes), and `s.length` is the number of bytes:
 ```
 public function: void main() {
     let: string name = "yare" + "script";
-    console.log(name);            // yarescript
-    console.log(name == "yarescript");  // true
-    console.log(("ab" + "c") == ("a" + "bc"));  // true
+    console.println(name);            // yarescript
+    console.println(name == "yarescript");  // true
+    console.println(("ab" + "c") == ("a" + "bc"));  // true
 }
 ```
 
@@ -173,10 +219,10 @@ error for now.
 
 These are available without any import.
 
-- `console.log(x)` for every primitive type. The type checker resolves the
-  call to a type-specific WebAssembly host import (`console_log_string`,
-  `console_log_int`, `console_log_long`, `console_log_float`,
-  `console_log_double`, `console_log_bool`, `console_log_char`) and the
+- `console.println(x)` for every primitive type. The type checker resolves the
+  call to a type-specific WebAssembly host import (`console_println_string`,
+  `console_println_int`, `console_println_long`, `console_println_float`,
+  `console_println_double`, `console_println_bool`, `console_println_char`) and the
   generated loader supplies the implementation. `char` prints as a letter.
 - `assert(cond: bool)` does nothing when `cond` is true and traps the module
   when it is false. This is how tests fail.
@@ -202,10 +248,10 @@ Once imported, a module's functions are called with the module name in front:
 @modules.import("math");
 
 public function: void main() {
-    console.log(str.upper("yare"));   // YARE
-    console.log(str.reverse("abc"));  // cba
-    console.log(math.pow(2, 10));     // 1024
-    console.log(math.sqrt(144.0));    // 12
+    console.println(str.upper("yare"));   // YARE
+    console.println(str.reverse("abc"));  // cba
+    console.println(math.pow(2, 10));     // 1024
+    console.println(math.sqrt(144.0));    // 12
 }
 ```
 
@@ -252,14 +298,15 @@ Every "I have never heard of this" error comes with the closest thing the
 compiler has heard of, when there is one close enough to be worth mentioning:
 
 ```
-error: Unknown function 'prntln'. Did you mean 'console.log'? (line 1)
+error: Unknown function 'prntln'. Did you mean 'console.println'? (line 1)
 error: Unknown identifier 'totl'. Did you mean 'total'? (line 2)
 error: Unknown type 'integ'. Did you mean 'int'? (line 1)
 error: Module 'str' has no function 'uppr'. Did you mean 'upper'?
 ```
 
-Names from other languages get a signpost too: `println`, `print`, and `log`
-all point at `console.log`, and `number` points at `double`.
+Names from other languages get a signpost too: `console.log`, `println`,
+`print`, and `log` all point at `console.println`, and `number` points at
+`double`.
 
 ## Formatting
 
@@ -296,9 +343,9 @@ public function: bool isEven(int n) {
 }
 
 public function: void main() {
-    console.log("yarescript kitchen sink");
-    console.log(fib(10));
-    console.log(sumTo(100));
-    console.log(isEven(sumTo(100)));
+    console.println("yarescript kitchen sink");
+    console.println(fib(10));
+    console.println(sumTo(100));
+    console.println(isEven(sumTo(100)));
 }
 ```

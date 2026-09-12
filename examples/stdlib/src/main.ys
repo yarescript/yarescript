@@ -3,9 +3,9 @@
 @modules.import("math");
 
 public function: void main() {
-    console.log(str.upper("yarescript"));
-    console.log(str.reverse("stressed"));
-    console.log(str.contains("yarescript", "scri"));
-    console.log(math.pow(2, 10));
-    console.log(math.sqrt(144.0));
+    console.println(str.upper("yarescript"));
+    console.println(str.reverse("stressed"));
+    console.println(str.contains("yarescript", "scri"));
+    console.println(math.pow(2, 10));
+    console.println(math.sqrt(144.0));
 }

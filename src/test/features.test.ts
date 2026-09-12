@@ -17,7 +17,7 @@ import { compileAndRun } from "./helpers";
 test("string concatenation", async () => {
   const { logs } = await compileAndRun(`
     public function: void main() {
-      console.log("hello, " + "world");
+      console.println("hello, " + "world");
     }
   `);
   assert.deepStrictEqual(logs, ["hello, world"]);
@@ -28,8 +28,8 @@ test("string concatenation chains and reuses variables", async () => {
     public function: void main() {
       let: string a = "yare";
       let: string b = a + "script" + "!";
-      console.log(b);
-      console.log(a);
+      console.println(b);
+      console.println(a);
     }
   `);
   assert.deepStrictEqual(logs, ["yarescript!", "yare"]);
@@ -40,7 +40,7 @@ test("string concatenation in a loop grows memory", async () => {
     public function: void main() {
       let: string s = "abcdefghij";
       for (let: int i = 0; i < 12; i++) { s = s + s; }
-      console.log(s == s);
+      console.println(s == s);
     }
   `);
   assert.deepStrictEqual(logs, ["true"]);
@@ -50,10 +50,10 @@ test("string equality compares bytes, not pointers", async () => {
   const { logs } = await compileAndRun(`
     public function: void main() {
       let: string a = "same";
-      console.log(a == "same");
-      console.log("same" != "other");
-      console.log("a" == "ab");
-      console.log(("ab" + "c") == ("a" + "bc"));
+      console.println(a == "same");
+      console.println("same" != "other");
+      console.println("a" == "ab");
+      console.println(("ab" + "c") == ("a" + "bc"));
     }
   `);
   assert.deepStrictEqual(logs, ["true", "true", "false", "true"]);
@@ -77,11 +77,11 @@ test("narrowing cast truncates", async () => {
   const { logs } = await compileAndRun(`
     public function: void main() {
       let: double pi = 3.99;
-      console.log(pi -> int);
-      console.log(pi -> long);
-      console.log(3 -> double);
-      console.log(7 -> bool);
-      console.log(0 -> bool);
+      console.println(pi -> int);
+      console.println(pi -> long);
+      console.println(3 -> double);
+      console.println(7 -> bool);
+      console.println(0 -> bool);
     }
   `);
   assert.deepStrictEqual(logs, ["3", "3", "3", "true", "false"]);
@@ -90,8 +90,8 @@ test("narrowing cast truncates", async () => {
 test("cast binds tighter than arithmetic", async () => {
   const { logs } = await compileAndRun(`
     public function: void main() {
-      console.log(2.5 + 1 -> int);
-      console.log((2.5 + 1) -> int);
+      console.println(2.5 + 1 -> int);
+      console.println((2.5 + 1) -> int);
     }
   `);
   assert.deepStrictEqual(logs, ["3.5", "3"]);
@@ -125,8 +125,8 @@ test("char holds a code unit and prints as a letter", async () => {
   const { logs } = await compileAndRun(`
     public function: void main() {
       let: char c = 72 -> char;
-      console.log(c);
-      console.log(c -> int);
+      console.println(c);
+      console.println(c -> int);
     }
   `);
   assert.deepStrictEqual(logs, ["H", "72"]);
@@ -137,9 +137,9 @@ test("integer literals wider than i32 become long", async () => {
     public function: void main() {
       let: long a = 3000000000;
       let: long b = 5000000000;
-      console.log(a);
-      console.log(b);
-      console.log(a + b);
+      console.println(a);
+      console.println(b);
+      console.println(a + b);
     }
   `);
   assert.deepStrictEqual(logs, ["3000000000", "5000000000", "8000000000"]);
@@ -159,9 +159,9 @@ test("mixed-width arithmetic widens the narrower operand", async () => {
   const { logs } = await compileAndRun(`
     public function: void main() {
       let: double x = 1.5;
-      console.log(x + 1);
+      console.println(x + 1);
       let: long y = 2;
-      console.log(y * 3.5);
+      console.println(y * 3.5);
     }
   `);
   assert.deepStrictEqual(logs, ["2.5", "7"]);
@@ -174,7 +174,7 @@ test("mixed-width arithmetic widens the narrower operand", async () => {
 test("export is another spelling of public", async () => {
   const { logs, exports } = await compileAndRun(`
     export function: int double(int x) { return x * 2; }
-    public function: void main() { console.log(double(21)); }
+    public function: void main() { console.println(double(21)); }
   `);
   assert.deepStrictEqual(logs, ["42"]);
   assert.strictEqual(typeof (exports as any).double, "function");
@@ -182,7 +182,7 @@ test("export is another spelling of public", async () => {
 
 test("assert(true) is quiet and assert(false) traps", async () => {
   const { logs } = await compileAndRun(`
-    public function: void main() { assert(1 + 1 == 2); console.log("survived"); }
+    public function: void main() { assert(1 + 1 == 2); console.println("survived"); }
   `);
   assert.deepStrictEqual(logs, ["survived"]);
 
@@ -196,7 +196,7 @@ test("runtime helper names are reserved", () => {
   assert.throws(() => {
     check(parse(`
       public function: int __yare_alloc(int x) { return x; }
-      public function: void main() { console.log(__yare_alloc(1)); }
+      public function: void main() { console.println(__yare_alloc(1)); }
     `));
   }, /reserved for the yarescript runtime/);
 });
@@ -213,7 +213,7 @@ test("imports pull in declarations from another file", async () => {
   );
   fs.writeFileSync(
     path.join(dir, "main.ys"),
-    `import { square } from "./math.ys";\npublic function: void main() { console.log(square(9)); }\n`
+    `import { square } from "./math.ys";\npublic function: void main() { console.println(square(9)); }\n`
   );
 
   const { program, files } = resolveModules(path.join(dir, "main.ys"));
@@ -222,7 +222,7 @@ test("imports pull in declarations from another file", async () => {
 
   const { wasmBinary } = generateWasm(check(program));
   const { instance } = await WebAssembly.instantiate(wasmBinary.slice().buffer, {
-    env: { console_log_int: () => {} },
+    env: { console_println_int: () => {} },
   });
   assert.strictEqual((instance.exports as any).square(9), 81);
 });
@@ -232,7 +232,7 @@ test("importing a name the file does not define is an error", () => {
   fs.writeFileSync(path.join(dir, "math.ys"), `public function: int square(int x) { return x * x; }\n`);
   fs.writeFileSync(
     path.join(dir, "main.ys"),
-    `import { cube } from "./math.ys";\npublic function: void main() { console.log(1); }\n`
+    `import { cube } from "./math.ys";\npublic function: void main() { console.println(1); }\n`
   );
   assert.throws(() => resolveModules(path.join(dir, "main.ys")), /does not define 'cube'/);
 });
@@ -251,7 +251,7 @@ test("a diamond import compiles the shared file once", () => {
   fs.writeFileSync(path.join(dir, "right.ys"), `import { base } from "./base.ys";\npublic function: int right() { return base(); }\n`);
   fs.writeFileSync(
     path.join(dir, "main.ys"),
-    `import { left } from "./left.ys";\nimport { right } from "./right.ys";\npublic function: void main() { console.log(left() + right()); }\n`
+    `import { left } from "./left.ys";\nimport { right } from "./right.ys";\npublic function: void main() { console.println(left() + right()); }\n`
   );
   const { files } = resolveModules(path.join(dir, "main.ys"));
   assert.strictEqual(files.filter((f) => f.endsWith("base.ys")).length, 1);

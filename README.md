@@ -11,12 +11,12 @@ it is still JS at 3am in production" problems. yarescript does not do that. It
 compiles straight to **WebAssembly**. There is no JavaScript application layer.
 The only JavaScript yarescript produces is a small, fixed-size loader that
 instantiates your compiled `.wasm` module and wires up a handful of host
-functions such as `console.log`. Your actual program, every `if`, every loop,
+functions such as `console.println`. Your actual program, every `if`, every loop,
 every function, is real WebAssembly bytecode running at near-native speed.
 
 ```
 public function: void main() {  // I didnt use, int becuase I am lazy
-    console.log("hello, world");
+    console.println("hello, world");
 }
 ```
 
@@ -65,8 +65,9 @@ Early, but real. The `.ys` to WebAssembly pipeline works end to end today.
 Working right now:
 
 - Lexer, recursive-descent parser, and AST
-- Static type checker (`int`, `long`, `float`, `double`, `bool`, `char`,
-  `string`, `void`)
+- A static type checker with the whole numeric ladder: `i8`, `i16`, `char`,
+  `int`, `long`, `u8`, `u16`, `u32`, `u64`, `float`, `double`, plus `bool`,
+  `string`, and `void`
 - Binaryen-backed codegen emitting real, runnable `.wasm`
 - Functions, `let`/`const`, `if`/`else`, `while`, `for`, `break`, `continue`,
   recursion, operator precedence
@@ -77,11 +78,11 @@ Working right now:
   by function into `.yare/dep/build/*.yare.dep`
 - Explicit casts with `->`, so narrowing a number is something you choose
 - Cross-file modules: `import { helper } from "./helper.ys"`
-- `console.log` and `assert` as host imports, which proves yarescript can talk
+- `console.println` and `assert` as host imports, which proves yarescript can talk
   to the outside world without becoming JavaScript
 - `yare init` / `yare build` / `yare run` / `yare fmt` / `yare test` CLI
 - Error messages that suggest what you meant: `prntln` gets pointed at
-  `console.log`, `totl` at `total`, `integ` at `int`
+  `console.println`, `totl` at `total`, `integ` at `int`
 - `config.yare` project manifest
 - A small generated loader for both Node and the browser
 
@@ -143,8 +144,8 @@ directive:
 @modules.import("math");
 
 public function: void main() {
-    console.log(str.upper("yarescript"));
-    console.log(math.sqrt(144.0));
+    console.println(str.upper("yarescript"));
+    console.println(math.sqrt(144.0));
 }
 ```
 
@@ -186,12 +187,12 @@ public function: int fib(int n) {
 
 public function: void main() {
     let: int result = fib(10);
-    console.log(result);
+    console.println(result);
 
     const: double pi = 3.14159;
 
     for (let: int i = 0; i < 5; i++) {
-        console.log(i);
+        console.println(i);
     }
 }
 ```
@@ -202,9 +203,11 @@ public function: void main() {
   `visibility` is `public` (exported from the compiled module) or `private`
   (internal only), and it defaults to `public`.
 - Every function and variable has an explicit type, from the low-level numerics
-  (`int`, `long`, `float`, `double`, `char`) up through `bool` and `string`.
-  There is no `any` and no implicit `undefined`.
+  (`i8`, `u8`, `char`, `int`, `long`, `u32`, `u64`, `float`, `double`) up
+  through `bool` and `string`. There is no `any` and no implicit `undefined`.
 - Numbers widen on their own and narrow only when you ask: `let: int n = pi -> int;`
+  Signed and unsigned never mix without a cast, and a narrow value wraps the
+  way its width says it should.
 - Strings concatenate with `+` and compare with `==`, and you can index them:
   `s[0]` is a `char` and `s.length` is an `int`.
 - Other files come in with `import { helper } from "./helper.ys";`

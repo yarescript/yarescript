@@ -5,7 +5,7 @@
  * application logic, no transpiled statements, and nothing that grows
  * with your program. It just:
  *   1. fetches/reads the .wasm binary
- *   2. hands it a couple of host functions (console.log, etc.)
+ *   2. hands it a couple of host functions (console.println, etc.)
  *   3. instantiates it and calls `main`
  *
  * Everything else, meaning your actual program, is compiled
@@ -18,23 +18,27 @@ export function generateLoaderJs(opts: {
   usedHostFunctions: string[];
 }): string {
   const hostFnImpls: Record<string, string> = {
-    console_log_string: `
-  console_log_string(ptr) {
+    console_println_string: `
+  console_println_string(ptr) {
     const bytes = new Uint8Array(memory.buffer, ptr + 4, new Uint32Array(memory.buffer, ptr, 1)[0]);
     console.log(new TextDecoder("utf-8").decode(bytes));
   },`,
-    console_log_int: `
-  console_log_int(v) { console.log(v); },`,
-    console_log_long: `
-  console_log_long(v) { console.log(v.toString()); }, // toString: nobody wants to read "3n"`,
-    console_log_float: `
-  console_log_float(v) { console.log(v); },`,
-    console_log_double: `
-  console_log_double(v) { console.log(v); },`,
-    console_log_bool: `
-  console_log_bool(v) { console.log(Boolean(v)); },`,
-    console_log_char: `
-  console_log_char(v) { console.log(String.fromCharCode(v)); },`,
+    console_println_int: `
+  console_println_int(v) { console.log(v); },`,
+    console_println_uint: `
+  console_println_uint(v) { console.log(v >>> 0); },`,
+    console_println_long: `
+  console_println_long(v) { console.log(v.toString()); }, // toString: nobody wants to read "3n"`,
+    console_println_ulong: `
+  console_println_ulong(v) { console.log((v < 0n ? v + (1n << 64n) : v).toString()); }, // and nobody wants to read a negative u64`,
+    console_println_float: `
+  console_println_float(v) { console.log(v); },`,
+    console_println_double: `
+  console_println_double(v) { console.log(v); },`,
+    console_println_bool: `
+  console_println_bool(v) { console.log(Boolean(v)); },`,
+    console_println_char: `
+  console_println_char(v) { console.log(String.fromCharCode(v)); },`,
     // A failed assert throws, which traps the module. That is the point: a
     // test that is wrong should be impossible to scroll past.
     assert: `
@@ -88,25 +92,29 @@ export function generateBrowserLoaderJs(opts: {
   usedHostFunctions: string[];
 }): string {
   const hostFnImpls: Record<string, string> = {
-    console_log_string: `
-    console_log_string(ptr) {
+    console_println_string: `
+    console_println_string(ptr) {
       const view = new DataView(memory.buffer);
       const len = view.getUint32(ptr, true);
       const bytes = new Uint8Array(memory.buffer, ptr + 4, len);
       console.log(new TextDecoder("utf-8").decode(bytes));
     },`,
-    console_log_int: `
-    console_log_int(v) { console.log(v); },`,
-    console_log_long: `
-    console_log_long(v) { console.log(v.toString()); },`,
-    console_log_float: `
-    console_log_float(v) { console.log(v); },`,
-    console_log_double: `
-    console_log_double(v) { console.log(v); },`,
-    console_log_bool: `
-    console_log_bool(v) { console.log(Boolean(v)); },`,
-    console_log_char: `
-    console_log_char(v) { console.log(String.fromCharCode(v)); },`,
+    console_println_int: `
+    console_println_int(v) { console.log(v); },`,
+    console_println_uint: `
+    console_println_uint(v) { console.log(v >>> 0); },`,
+    console_println_long: `
+    console_println_long(v) { console.log(v.toString()); },`,
+    console_println_ulong: `
+    console_println_ulong(v) { console.log((v < 0n ? v + (1n << 64n) : v).toString()); },`,
+    console_println_float: `
+    console_println_float(v) { console.log(v); },`,
+    console_println_double: `
+    console_println_double(v) { console.log(v); },`,
+    console_println_bool: `
+    console_println_bool(v) { console.log(Boolean(v)); },`,
+    console_println_char: `
+    console_println_char(v) { console.log(String.fromCharCode(v)); },`,
     assert: `
     assert(v) {
       if (!v) throw new Error("assertion failed");

@@ -8,7 +8,7 @@ import { compileAndRun } from "./helpers";
 test("hello world prints a string", async () => {
   const { logs } = await compileAndRun(`
     public function: void main() {
-      console.log("hello, world");
+      console.println("hello, world");
     }
   `);
   assert.deepStrictEqual(logs, ["hello, world"]);
@@ -21,7 +21,7 @@ test("arithmetic, recursion, and int math", async () => {
       return fib(n - 1) + fib(n - 2);
     }
     public function: void main() {
-      console.log(fib(10));
+      console.println(fib(10));
     }
   `);
   assert.deepStrictEqual(logs, ["55"]);
@@ -34,7 +34,7 @@ test("for loop with += accumulates correctly", async () => {
       for (let: int i = 1; i <= 100; i++) {
         total += i;
       }
-      console.log(total);
+      console.println(total);
     }
   `);
   assert.deepStrictEqual(logs, ["5050"]);
@@ -48,7 +48,7 @@ test("while with break and continue", async () => {
         i = i + 1;
         if (i == 3) { continue; }
         if (i > 5) { break; }
-        console.log(i);
+        console.println(i);
       }
     }
   `);
@@ -59,8 +59,8 @@ test("bool and comparison operators", async () => {
   const { logs } = await compileAndRun(`
     public function: bool isEven(int n) { return n % 2 == 0; }
     public function: void main() {
-      console.log(isEven(4));
-      console.log(isEven(7));
+      console.println(isEven(4));
+      console.println(isEven(7));
     }
   `);
   assert.deepStrictEqual(logs, ["true", "false"]);
@@ -73,7 +73,7 @@ test("double arithmetic widens int literals", async () => {
       return (a + b) / two;
     }
     public function: void main() {
-      console.log(average(3.5, 4.5));
+      console.println(average(3.5, 4.5));
     }
   `);
   assert.deepStrictEqual(logs, ["4"]);
@@ -82,7 +82,7 @@ test("double arithmetic widens int literals", async () => {
 test("private functions are not exported", async () => {
   const { exports } = await compileAndRun(`
     private function: int helper(int x) { return x * 2; }
-    public function: void main() { console.log(helper(21)); }
+    public function: void main() { console.println(helper(21)); }
   `);
   assert.strictEqual((exports as any).helper, undefined);
   assert.strictEqual(typeof (exports as any).main, "function");
@@ -124,7 +124,7 @@ test("unterminated string is a lex error", () => {
   assert.throws(() => {
     parse(`
       public function: void main() {
-        console.log("unterminated);
+        console.println("unterminated);
       }
     `);
   });
@@ -142,8 +142,8 @@ test("postfix increment returns the pre-increment value", async () => {
   const { logs } = await compileAndRun(`
     public function: void main() {
       let: int i = 5;
-      console.log(i++);
-      console.log(i);
+      console.println(i++);
+      console.println(i);
     }
   `);
   assert.deepStrictEqual(logs, ["5", "6"]);
@@ -153,8 +153,8 @@ test("prefix increment returns the post-increment value", async () => {
   const { logs } = await compileAndRun(`
     public function: void main() {
       let: int i = 5;
-      console.log(++i);
-      console.log(i);
+      console.println(++i);
+      console.println(i);
     }
   `);
   assert.deepStrictEqual(logs, ["6", "6"]);
